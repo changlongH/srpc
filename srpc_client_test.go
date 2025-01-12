@@ -2,14 +2,16 @@ package srpc_test
 
 import (
 	"fmt"
-	"runtime"
+	"reflect"
 	"strconv"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/changlongH/srpc"
+	"github.com/changlongH/srpc/client"
 	"github.com/changlongH/srpc/cluster"
+	payloadcodec "github.com/changlongH/srpc/payload_codec"
 )
 
 type FooBar struct {
@@ -24,8 +26,7 @@ func TestClusterClient(t *testing.T) {
 		"db2": "127.0.0.1:2529",
 	}
 
-	// 指定额外参数序列化方式JSON
-	errs := cluster.ReloadCluster(nodes, cluster.WithArgsCodec(&cluster.ArgsCodecJson{}))
+	errs := cluster.ReloadCluster(nodes, client.WithPayloadCodec(&payloadcodec.MsgPack{}))
 	if errs != nil {
 		t.Errorf("register cluster nodes failed cnt: %d", len(errs))
 		return
@@ -35,47 +36,48 @@ func TestClusterClient(t *testing.T) {
 	cluster.Remove("db")
 
 	// register again with default codec
-	_, err := cluster.Register("db", "127.0.0.1:2528")
+	_, err := cluster.Register("db", "127.0.0.1:2528", client.WithPayloadCodec(&payloadcodec.MsgPack{}))
 	if err != nil {
 		t.Error(err)
 		return
 	}
 
-	var fooBar = &FooBar{Id: 1, Name: "foobar"}
-	err = srpc.Call("db", "sdb", "set", nil, nil, srpc.WithCallParams("srpc", &fooBar))
+	var fooBar = map[string]string{"key": "srpc", "val": "foobar"}
+	caller := client.NewCaller("db", "sdb", "SETX", fooBar).WithTimeout(5 * time.Second)
+	if err = srpc.Invoke(caller); err != nil {
+		t.Error(err)
+		return
+	}
+
+	var reply = new(map[string]string)
+	err = srpc.Call("db", "sdb", "GETX", map[string]string{"key": "srpc"}, reply)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	if !reflect.DeepEqual(*reply, fooBar) {
+		t.Errorf("fooBar=%v,reply=%v", fooBar, *reply)
+		return
+	}
+
+	var fooBar2 = map[string]string{"key": "srpc2", "val": "foobar2"}
+	err = srpc.Send("db2", "sdb", "SETX", fooBar2)
 	if err != nil {
 		t.Error(err)
 		return
 	}
 
-	var replyFooBar = FooBar{}
-	err = srpc.Call("db", "sdb", "get", "srpc", &replyFooBar)
-	if err != nil {
-		t.Error(err)
-		return
-	}
-	if fooBar.Id != replyFooBar.Id || fooBar.Name != replyFooBar.Name {
-		t.Error("get/set sprc foobar struct failed")
-		return
-	}
-
-	err = srpc.Send("db2", "sdb", "set", "srpc2", "foobar2")
-	if err != nil {
-		t.Error(err)
-		return
-	}
 	// runtime.Gosched
 	time.Sleep(time.Second)
-
-	var reply = []byte{}
-	err = srpc.Call("db2", "sdb", "get", "srpc2", &reply)
+	var reply2 = new(map[string]string)
+	err = srpc.Call("db2", "sdb", "GETX", map[string]string{"key": "srpc2"}, reply2)
 	if err != nil {
 		t.Error(err)
 		return
 	}
 
-	if string(reply) != "foobar2" {
-		t.Error("unmatch set/get key=name2")
+	if !reflect.DeepEqual(*reply2, fooBar2) {
+		t.Errorf("fooBar2=%v,reply2=%v", fooBar2, reply2)
 		return
 	}
 
@@ -86,26 +88,35 @@ func TestClusterClient(t *testing.T) {
 		return
 	}
 
-	var fooBar2 = FooBar{}
-	err = srpc.Call("db2", "sdb", "get", "srpc", &fooBar2)
+	err = srpc.Call("db2", "sdb", "GETX", map[string]string{"key": "srpc"}, reply)
 	if err != nil {
 		t.Error(err)
 		return
 	}
-	if fooBar.Id != fooBar2.Id || fooBar.Name != fooBar2.Name {
-		t.Error("change node failed")
+	if !reflect.DeepEqual(*reply, fooBar) {
+		t.Errorf("fooBar=%v,reply=%v", fooBar, *reply)
 		return
 	}
 
-	// test with timeout
-	err = srpc.Call("db", "sdb", "TEST", "ping", &reply, srpc.WithCallTimeout(time.Second*3))
-	if err.Error() != "timeout" {
-		t.Error("timeout failed")
+	err = srpc.Call("db2", "sdb", "SETX", map[string]string{"key": "srpc"}, nil)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+
+	// test with timeout. not pararms and reply
+	caller, err = client.NewCaller("db2", "sdb", "SLEEP", 5).WithTimeout(3 * time.Second).Done()
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	if err = srpc.Invoke(caller); err == nil {
+		t.Error("timeout call failed. not timeout")
 		return
 	}
 
 	// wait close
-	time.Sleep(time.Second * 10)
+	time.Sleep(time.Second * 6)
 	fmt.Println("test cluster client succ")
 }
 
@@ -121,14 +132,15 @@ func TestChangeNode(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			var reply = []byte{}
+			var reply = map[string]string{}
+			var req = map[string]string{"msg": "ping: " + strconv.Itoa(i)}
 			// call will response after 10s
-			err = srpc.Call("db", "sdb", "TEST", "ping: "+strconv.Itoa(i), &reply)
+			err = srpc.Call("db", "sdb", "TESTX", req, &reply)
 			if err != nil {
 				t.Error(err)
 				return
 			}
-			fmt.Println(time.Now().Local(), string(reply))
+			fmt.Println(time.Now().Local(), reply["val"])
 		}()
 	}
 
@@ -138,50 +150,6 @@ func TestChangeNode(t *testing.T) {
 		t.Error(err)
 		return
 	}
-	fmt.Println("change node success")
-
 	wg.Wait()
-}
-
-func TestBench(t *testing.T) {
-	_, err := cluster.Register("db", "127.0.0.1:2528")
-	if err != nil {
-		t.Error(err)
-		return
-	}
-	var wg sync.WaitGroup
-
-	for i := 0; i < 1000; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			var k = fmt.Sprintf("key-%d", i)
-			var v = fmt.Sprintf("foobar-%d", i)
-			srpc.Send("db", "sdb", "set", k, v)
-			runtime.Gosched()
-
-			var reply = []byte{}
-			err := srpc.Call("db", "sdb", "get", k, &reply)
-			if err != nil {
-				t.Error(err)
-				return
-			}
-
-			if string(reply) == v {
-				return
-			}
-
-			// retry
-			err = srpc.Call("db", "sdb", "get", k, &reply)
-			if err != nil {
-				t.Error(err)
-				return
-			}
-			if string(reply) != v {
-				t.Error(k, v, string(reply))
-			}
-		}()
-	}
-	wg.Wait()
-	fmt.Println("test bench call success")
+	fmt.Println("test change node success")
 }

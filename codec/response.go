@@ -1,7 +1,6 @@
 package codec
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
 
@@ -22,80 +21,92 @@ type (
 	RespPack struct {
 		Ok      bool   // msg pack/unpack
 		Session uint32 // DWORD
-		Message []byte // 0: errmsg  1: msg  2: DWORD size   3/4: msg
+		Payload []byte // 0: errmsg  1: msg  2: DWORD size   3/4: msg
 	}
 )
 
 const (
-	PartSize uint32 = 0x8000
+	PartSize int = 0x8000
 )
 
-func EncodeResp(writer netpoll.Writer, msg *RespPack) error {
-	data, err := packStrings(msg.Message)
-	if err != nil {
-		return err
-	}
-	sz := uint32(len(data))
+func WriteResp(writer netpoll.Writer, msg *RespPack) (err error) {
+	data := msg.Payload
+	sz := len(data)
 	bType := RespTypeOk
-	if msg.Ok {
-		if sz > PartSize {
-			// multi part header session(4)+byte(1)+msgsize(4)=9
-			header, _ := writer.Malloc(2)
-			binary.BigEndian.PutUint16(header, 9)
-			session, _ := writer.Malloc(4)
-			binary.LittleEndian.PutUint32(session, msg.Session)
-			writer.WriteByte(byte(RespTypeMBegin))
-			msgsz, _ := writer.Malloc(4)
-			binary.LittleEndian.PutUint32(msgsz, sz)
-
-			part := int((sz-1)/PartSize + 1)
-			index := uint32(0)
-			// multi part others
-			for i := 0; i < part; i++ {
-				var s uint32
-				var bType RetType
-				if sz > PartSize {
-					s = PartSize
-					bType = RespTypeMPart
-				} else {
-					s = sz
-					bType = RespTypeMEnd
-				}
-				header, _ := writer.Malloc(2)
-				binary.BigEndian.PutUint16(header, uint16(s+5))
-				session, _ := writer.Malloc(4)
-				binary.LittleEndian.PutUint32(session, msg.Session)
-				writer.WriteByte(byte(bType))
-				writer.WriteBinary(data[index : index+s])
-				index = s
-				sz = sz - s
-			}
-			err = writer.Flush()
-			return err
-		}
-	} else {
-		bType = RespTypeErr
+	if !msg.Ok {
 		// truncate the error msg if too long
 		if sz > PartSize {
 			sz = PartSize
 			data = data[:sz]
 		}
+		bType = RespTypeErr
 	}
 
-	// header(2)
-	header, _ := writer.Malloc(2)
-	binary.BigEndian.PutUint16(header, uint16(sz+5))
-	// session(4)
-	session, _ := writer.Malloc(4)
-	binary.LittleEndian.PutUint32(session, msg.Session)
-	//type(1)
-	writer.WriteByte(byte(bType))
-	// msg(uint32-7)
-	writer.WriteBinary(data)
-	return writer.Flush()
+	if sz <= PartSize {
+		// header = session(4) + type(1) + bodysize
+		if err = writeHeader(writer, uint16(sz+5)); err != nil {
+			return
+		}
+		if err = writeSession(writer, msg.Session); err != nil {
+			return
+		}
+		if err = writer.WriteByte(byte(bType)); err != nil {
+			return
+		}
+		if _, err = writer.WriteBinary(data); err != nil {
+			return
+		}
+	} else {
+		// multi part header session(4)+byte(1)+msgsize(4)=9
+		if err = writeHeader(writer, 9); err != nil {
+			return
+		}
+		if err = writeSession(writer, msg.Session); err != nil {
+			return
+		}
+		if err = writer.WriteByte(byte(RespTypeMBegin)); err != nil {
+			return
+		}
+		if err = writeUint32(writer, uint32(sz)); err != nil {
+			return
+		}
+
+		part := int((sz-1)/PartSize + 1)
+		index := 0
+		// multi part others
+		for i := 0; i < part; i++ {
+			var s int
+			var bType RetType
+			if sz > PartSize {
+				s = PartSize
+				bType = RespTypeMPart
+			} else {
+				s = sz
+				bType = RespTypeMEnd
+			}
+			// session(4) + type(1)
+			if err = writeHeader(writer, uint16(s+5)); err != nil {
+				return
+			}
+			if err = writeSession(writer, msg.Session); err != nil {
+				return
+			}
+			if err = writer.WriteByte(byte(bType)); err != nil {
+				return
+			}
+			// body
+			if _, err = writer.WriteBinary(data[index : index+s]); err != nil {
+				return
+			}
+			index = s
+			sz = sz - s
+		}
+	}
+	err = writer.Flush()
+	return
 }
 
-func DecodeResp(pkg netpoll.Reader, largeResp map[uint32]*RespPack) (*RespPack, error) {
+func ReadResp(pkg netpoll.Reader, pendingResp map[uint32]*RespPack) (resp *RespPack, err error) {
 	defer pkg.Release()
 	headersz := 5
 	sz := pkg.Len()
@@ -103,84 +114,75 @@ func DecodeResp(pkg netpoll.Reader, largeResp map[uint32]*RespPack) (*RespPack, 
 		return nil, errors.New("invalid response package size=0")
 	}
 
-	// session(4)
-	bLen, err := pkg.ReadBinary(4)
-	if err != nil {
-		return nil, err
-	}
-	session := binary.LittleEndian.Uint32(bLen)
-
-	// code(1)
-	code, err := pkg.ReadByte()
-	if err != nil {
+	var session uint32
+	if session, err = readSession(pkg); err != nil {
 		return nil, err
 	}
 
+	var code byte
+	if code, err = pkg.ReadByte(); err != nil {
+		return
+	}
+
+	var payload []byte
 	switch code {
 	case 0: // error
-		msg, err := readOneArgs(pkg)
-		if err != nil {
-			return nil, err
+		if payload, err = pkg.ReadBinary(pkg.Len()); err != nil {
+			return
 		}
-		resp := &RespPack{
+		resp = &RespPack{
 			Session: session,
 			Ok:      false,
-			Message: msg,
+			Payload: payload,
 		}
-		return resp, nil
+		return
 	case 1: // ok
-		msg, err := readOneArgs(pkg)
-		if err != nil {
-			return nil, err
+		if payload, err = readString(pkg); err != nil {
+			return
 		}
-		resp := &RespPack{
+		resp = &RespPack{
 			Session: session,
 			Ok:      true,
-			Message: msg,
+			Payload: payload,
 		}
-		return resp, nil
+		return
 	case 4: // multi end
-		msg, err := pkg.ReadBinary(sz - headersz)
-		if err != nil {
-			return nil, err
+		if payload, err = pkg.ReadBinary(sz - headersz); err != nil {
+			return
 		}
-		if resp, ok := largeResp[session]; ok {
-			data := append(resp.Message, msg...)
-			args, err := unpackStrings(data)
-			if err != nil {
-				return nil, err
-			}
-			resp.Message = []byte(args[0])
-			return resp, nil
-		} else {
-			return nil, fmt.Errorf("invalid large response end part session=(%d)", session)
+		var ok bool
+		if resp, ok = pendingResp[session]; !ok {
+			err = fmt.Errorf("invalid pack end part session=(%d)", session)
+			return
 		}
+		delete(pendingResp, session)
+		payload = append(resp.Payload, payload...)
+		resp.Payload, _, err = decodeString(payload)
+		return
 	case 2: // multi begin
 		if sz != 9 {
-			return nil, fmt.Errorf("invalid multi begin headersz=(%d)", sz)
+			err = fmt.Errorf("invalid pack multi begin headersz=(%d)", sz)
+			return
 		}
-		msg, err := pkg.ReadBinary(sz - headersz)
-		if err != nil {
-			return nil, err
+		if payload, err = pkg.ReadBinary(sz - headersz); err != nil {
+			return
 		}
-		resp := &RespPack{
+		pendingResp[session] = &RespPack{
 			Session: session,
 			Ok:      true,
-			Message: msg,
+			Payload: payload,
 		}
-		largeResp[session] = resp
-		return nil, nil
+		return
 	case 3: // multi part
-		msg, err := pkg.ReadBinary(sz - headersz)
-		if err != nil {
-			return nil, err
+		if payload, err = pkg.ReadBinary(sz - headersz); err != nil {
+			return
 		}
-		if resp, ok := largeResp[session]; ok {
-			resp.Message = append(resp.Message, msg...)
-			return nil, nil
+		if pack, ok := pendingResp[session]; ok {
+			pack.Payload = append(pack.Payload, payload...)
 		} else {
-			return nil, fmt.Errorf("invalid large response part session=(%d)", session)
+			err = fmt.Errorf("invalid large response part session=(%d)", session)
 		}
+		return
 	default:
 		return nil, nil
 	}

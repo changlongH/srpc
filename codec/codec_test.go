@@ -1,8 +1,8 @@
 package codec
 
 import (
+	"bytes"
 	"crypto/rand"
-	"fmt"
 	"reflect"
 	"testing"
 )
@@ -22,87 +22,32 @@ func generateRandomString(length int) string {
 	return string(result)
 }
 
-func assertCheckPackRet(rawMsg string, packedMsg string, headerSize int) bool {
-	rawLen := len(rawMsg)
-	packedLen := len(packedMsg)
-	expectPackLen := rawLen + headerSize
-	if expectPackLen != packedLen {
-		panic(fmt.Sprintf("assertCheckPackRet rawLen=%d,packedLen=%d,expectHeaderSize=%d", rawLen, packedLen, headerSize))
+func TestSeriString(t *testing.T) {
+	str31 := generateRandomString(31)
+	str32 := generateRandomString(32)
+	strShort := generateRandomString(0x10000 - 1)
+	strLong := generateRandomString(0x10000)
+
+	buf := &bytes.Buffer{}
+	var rawStrs = []string{"", str31, str32, strShort, strLong}
+	err := writeStringsToBuf(buf, []byte(""), []byte(str31), []byte(str32), []byte(strShort), []byte(strLong))
+	if err != nil {
+		t.Error(err)
+		return
 	}
 
-	return true
-}
-
-func assertCheckUnpack(packedMsg string, rawMsgs []string) {
-	if ret, err := unpackStrings([]byte(packedMsg)); err != nil {
-		panic(err.Error())
-	} else {
-		if !reflect.DeepEqual(ret, rawMsgs) {
-			panic("unpack not equal")
+	strs, err := decodeStrings(buf.Bytes())
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	for i, str := range strs {
+		rawStr := rawStrs[i]
+		if !reflect.DeepEqual(rawStr, str) {
+			t.Errorf("unpack not equal got=%s,expect=%s", str, rawStr)
+			return
 		}
 	}
-}
-
-func TestSeri(t *testing.T) {
-	// zero
-	msg := ""
-	packedMsg, err := packStrings([]byte(msg))
-	if err != nil {
-		t.Error(err)
-		return
-	}
-	assertCheckPackRet(msg, string(packedMsg), 1)
-	assertCheckUnpack(string(packedMsg), []string{msg})
-
-	// 31
-	msg = generateRandomString(31)
-	packedMsg, err = packStrings([]byte(msg))
-	if err != nil {
-		t.Error(err)
-		return
-	}
-	assertCheckPackRet(msg, string(packedMsg), 1)
-	assertCheckUnpack(string(packedMsg), []string{msg})
-
-	// 32
-	msg = generateRandomString(32)
-	packedMsg, err = packStrings([]byte(msg))
-	if err != nil {
-		t.Error(err)
-		return
-	}
-	assertCheckPackRet(msg, string(packedMsg), 3)
-	assertCheckUnpack(string(packedMsg), []string{msg})
-
-	// 0x10000-1
-	msg = generateRandomString(0x10000 - 1)
-	packedMsg, err = packStrings([]byte(msg))
-	if err != nil {
-		t.Error(err)
-		return
-	}
-	assertCheckPackRet(msg, string(packedMsg), 3)
-	assertCheckUnpack(string(packedMsg), []string{msg})
-
-	// 0x10000
-	msg = generateRandomString(0x10000)
-	packedMsg, err = packStrings([]byte(msg))
-	if err != nil {
-		t.Error(err)
-		return
-	}
-	assertCheckPackRet(msg, string(packedMsg), 5)
-	assertCheckUnpack(string(packedMsg), []string{msg})
-
-	// multi str
-	msg1, msg2, msg3 := "", generateRandomString(32), generateRandomString(0x10000)
-	packedMsg, err = packStrings([]byte(msg1), []byte(msg2), []byte(msg3))
-	if err != nil {
-		t.Error(err)
-		return
-	}
-	assertCheckPackRet(msg1+msg2+msg3, string(packedMsg), 1+3+5)
-	assertCheckUnpack(string(packedMsg), []string{msg1, msg2, msg3})
 }
 
 func TestCombineType(t *testing.T) {
@@ -134,26 +79,5 @@ func TestCombineType(t *testing.T) {
 	tp, v = uncombineType(header)
 	if int(tp) != 4 || int(v) != 0 {
 		panic("combine test faile")
-	}
-}
-
-func TestReqAndResp(t *testing.T) {
-	cmd := generateRandomString(31)
-	message := []byte(generateRandomString(32))
-	payload, err := PackPayload([]byte(cmd), message)
-	if err != nil {
-		t.Error(err)
-		return
-	}
-	rawPack := &ReqPack{
-		Addr:    Addr{Id: 0, Name: "sdb"},
-		Session: 1,
-		Payload: payload,
-	}
-
-	var decPack = rawPack
-	if !reflect.DeepEqual(rawPack, decPack) {
-		t.Error("not equal")
-		return
 	}
 }

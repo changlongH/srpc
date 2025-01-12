@@ -2,11 +2,13 @@ package cluster
 
 import (
 	"sync"
+
+	"github.com/changlongH/srpc/client"
 )
 
 type Cluster struct {
 	sync.RWMutex
-	nodes map[string]*Client
+	nodes map[string]*client.Client
 }
 
 var (
@@ -18,14 +20,14 @@ func GetCluster() *Cluster {
 	if inst == nil {
 		once.Do(func() {
 			inst = &Cluster{
-				nodes: map[string]*Client{},
+				nodes: map[string]*client.Client{},
 			}
 		})
 	}
 	return inst
 }
 
-func (cs *Cluster) register(name, address string, opts ...ClientOption) (*Client, error) {
+func (cs *Cluster) register(name, address string, opts ...client.Option) (*client.Client, error) {
 	cs.Lock()
 	defer cs.Unlock()
 	if c, ok := cs.nodes[name]; ok {
@@ -33,12 +35,11 @@ func (cs *Cluster) register(name, address string, opts ...ClientOption) (*Client
 			c.Close()
 			delete(cs.nodes, name)
 		} else {
-			//errors.New("register duplicate name: " + name)
 			return nil, nil
 		}
 	}
 
-	var c, err = NewClient(address, opts...)
+	var c, err = client.NewClient(address, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -57,35 +58,63 @@ func (cs *Cluster) remove(name string) {
 	c.Close()
 }
 
-func (cs *Cluster) query(name string) *Client {
+func (cs *Cluster) query(name string) *client.Client {
 	cs.RLock()
 	defer cs.RUnlock()
-	if c, ok := cs.nodes[name]; ok && !c.closing {
+	if c, ok := cs.nodes[name]; ok && !c.IsClosing() {
 		return c
 	}
 	return nil
 }
 
-// Register register skynet cluster node
-// Examples:
-//
-//	Register("node1", "192.0.2.1:6789")
-//	Register("node2", "192.0.2.1:6790")
-func Register(node string, address string, opts ...ClientOption) (*Client, error) {
+/*
+Register register skynet cluster node
+default withArgsCodec(json) and Timeout(5*second)
+
+Examples:
+
+Register("node1", "192.0.2.1:6789", client.WithArgsCodec(&client.ArgsCodecJson{})
+
+If you want to reload node address to port:6790, old client will close after 30s
+Register("node1", "192.0.2.1:6790")
+*/
+func Register(node string, address string, opts ...client.Option) (*client.Client, error) {
 	return GetCluster().register(node, address, opts...)
 }
 
+/*
+Remove remove cluster registed node
+
+Client connecting will break afeter 30s
+*/
 func Remove(node string) {
 	GetCluster().remove(node)
 }
 
-func Query(node string) *Client {
+/*
+Query query a registed node in cluster
+
+Returns a [*client.Client]
+*/
+func Query(node string) *client.Client {
 	return GetCluster().query(node)
 }
 
-// ReloadCluster Register multi address
-// returns register err nodes
-func ReloadCluster(nodes map[string]string, opts ...ClientOption) map[string]error {
+/*
+ReloadCluster register multi skynet cluster node
+
+Default withArgsCodec(json) and Timeout(5*second)
+
+# It's safely to Reload multi times with same config
+# If client connecting. It will closed after 30s
+
+Examples:
+
+ReloadCluster("node1", map[string]string{"node":"127.0.0.1:8080"}, client.WithArgsCodec(&client.ArgsCodecJson{})
+
+Returns register fail nodesErr
+*/
+func ReloadCluster(nodes map[string]string, opts ...client.Option) map[string]error {
 	var errNodes = map[string]error{}
 	var cst = GetCluster()
 	for name, address := range nodes {

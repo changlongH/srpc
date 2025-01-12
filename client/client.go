@@ -1,10 +1,10 @@
-package cluster
+package client
 
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"log"
-	"reflect"
 	"sync"
 	"time"
 
@@ -12,11 +12,6 @@ import (
 	"github.com/cloudwego/netpoll"
 	"github.com/cloudwego/netpoll/mux"
 )
-
-type ArgsCodec interface {
-	Marshal(v any) ([]byte, error)
-	Unmarshal(data []byte, v any) error
-}
 
 type (
 	Req struct {
@@ -29,7 +24,7 @@ type (
 		// connecting lock
 		sync.Mutex
 
-		Options ClientOptions
+		Options Options
 		Address string
 
 		mutex   sync.Mutex
@@ -44,6 +39,12 @@ type (
 	}
 )
 
+var ErrClosing = errors.New("client is closing")
+
+func (c *Client) IsClosing() bool {
+	return c.closing
+}
+
 func (c *Client) Seq() uint32 {
 	if c.seq == 0 {
 		c.seq = 1
@@ -53,10 +54,38 @@ func (c *Client) Seq() uint32 {
 	return seq
 }
 
+func (c *Client) decodeRspArgs(req *Req, msg *codec.RespPack) {
+	if req.Reply == nil {
+		return
+	}
+
+	if len(msg.Payload) <= 0 {
+		return
+	}
+
+	if !msg.Ok {
+		req.Error = errors.New(string(msg.Payload))
+		return
+	}
+
+	switch reply := req.Reply.(type) {
+	case *string:
+		*reply = string(msg.Payload)
+	case *[]byte:
+		*reply = msg.Payload
+	default:
+		pc := c.Options.PayloadCodec
+		if err := pc.Unmarshal(msg.Payload, reply); err != nil {
+			req.Error = errors.New("payload unmarshal err: " + err.Error())
+		}
+	}
+}
+
 func (c *Client) readResponse(conn netpoll.Connection) {
 	defer func() {
 		c.mutex.Lock()
 		if err := recover(); err != nil {
+			// TODO: need handle?
 			log.Println(err)
 			if c.conn != nil && c.conn.IsActive() {
 				c.conn.Close()
@@ -83,6 +112,7 @@ func (c *Client) readResponse(conn netpoll.Connection) {
 			if err != nil {
 				return err
 			}
+			// header bigEndian
 			pkgsize := int(binary.BigEndian.Uint16(bLen))
 			pkg, err := reader.Slice(pkgsize)
 			if err != nil {
@@ -98,7 +128,7 @@ func (c *Client) readResponse(conn netpoll.Connection) {
 	for {
 		select {
 		case pkg := <-recv:
-			msg, err = codec.DecodeResp(pkg, pendingPack)
+			msg, err = codec.ReadResp(pkg, pendingPack)
 			if err != nil {
 				return
 			}
@@ -110,19 +140,9 @@ func (c *Client) readResponse(conn netpoll.Connection) {
 			req, ok := c.pending[session]
 			delete(c.pending, session)
 			c.mutex.Unlock()
+
 			if ok {
-				if len(msg.Message) > 0 && req.Reply != nil {
-					switch replay := req.Reply.(type) {
-					case *string:
-						*replay = string(msg.Message)
-					case *[]byte:
-						*replay = msg.Message
-					default:
-						if err = c.Options.ArgsCodec.Unmarshal(msg.Message, req.Reply); err != nil {
-							req.Error = errors.New("Unmarshal err: " + err.Error())
-						}
-					}
-				}
+				c.decodeRspArgs(req, msg)
 				req.Done <- req
 			} else {
 				// invalid session
@@ -170,93 +190,80 @@ func (c *Client) syncConnect() error {
 	return nil
 }
 
-// Send Send equal skynet cluster.send(node, addr, cmd, ...)
-// node: registered cluster node name
-// service: support skynet string name or number address
-func (c *Client) Send(node string, addr *codec.Addr, payload []byte) error {
+func (c *Client) Invoke(caller *Caller) error {
+	payload, err := c.EncodePayload(caller)
+	if err != nil {
+		return fmt.Errorf("invoke %s encode failed. %s", caller.String(), err.Error())
+	}
+
 	if c.conn == nil || !c.conn.IsActive() {
-		// closeing represents node address changed
 		if c.closing {
-			proxy := Query(node)
-			if proxy != nil {
-				return proxy.Send(node, addr, payload)
-			}
-			return errors.New("cluster client shutdown node: " + node)
-		} else {
-			// try connect once
+			return ErrClosing
+		}
+		if caller.IsPush() {
+			// try async connect once
 			go func() {
 				if err := c.syncConnect(); err != nil {
-					log.Printf("cluster send node=%s,addr=%s,err=%s", node, addr, err)
+					log.Printf("invoke %s connect failed. %s", caller.String(), err.Error())
 				} else {
-					c.invoke(addr, 0, payload)
+					c.mutex.Lock()
+					var seq = c.Seq()
+					c.mutex.Unlock()
+					c.invoke(caller.Addr, seq, caller.Method, payload, caller.IsPush())
 				}
 			}()
+			// return immediately
 			return nil
-		}
-	}
-	if err := c.invoke(addr, 0, payload); err != nil {
-		return errors.New("send invoke err:" + err.Error())
-	}
-	return nil
-}
-
-func (c *Client) Call(node string, addr *codec.Addr, payload []byte, reply any, timeout time.Duration) error {
-	if reply != nil {
-		valueType := reflect.TypeOf(reply)
-		if valueType.Kind() != reflect.Ptr {
-			return errors.New("reply kind must be (ptr or nil)")
-		}
-	}
-
-	if c.conn == nil || !c.conn.IsActive() {
-		// closeing represents node address changed
-		if c.closing {
-			proxy := Query(node)
-			if proxy != nil {
-				return proxy.Call(node, addr, payload, reply, timeout)
-			}
-			return errors.New("cluster client shutdown node: " + node)
 		} else {
 			// try connect once
 			if err := c.syncConnect(); err != nil {
-				return errors.New("call connect err:" + err.Error())
+				return fmt.Errorf("invoke %s connect failed. %s", caller.String(), err.Error())
 			}
-			// connect success continue
 		}
 	}
 
-	req := &Req{
-		Reply: reply,
-		Done:  make(chan *Req),
-	}
-
+	var req *Req
 	c.mutex.Lock()
 	var seq = c.Seq()
-	c.pending[seq] = req
+	if !caller.IsPush() {
+		req = &Req{
+			Reply: caller.Reply,
+			Done:  make(chan *Req),
+		}
+		c.pending[seq] = req
+	}
 	c.mutex.Unlock()
 
-	if err := c.invoke(addr, seq, payload); err != nil {
-		c.mutex.Lock()
-		delete(c.pending, seq)
-		c.mutex.Unlock()
-		return errors.New("call invoke err:" + err.Error())
+	if err := c.invoke(caller.Addr, seq, caller.Method, payload, caller.IsPush()); err != nil {
+		if !caller.IsPush() {
+			c.mutex.Lock()
+			delete(c.pending, seq)
+			c.mutex.Unlock()
+		}
+		return fmt.Errorf("invoke %s socker failed. %s", caller.String(), err.Error())
 	}
 
+	if caller.IsPush() {
+		return nil
+	}
+
+	// wait call done
 	select {
 	case <-req.Done:
 		return req.Error
-	case <-time.After(timeout):
-		return errors.New("timeout")
+	case <-time.After(caller.Timeout):
+		return fmt.Errorf("invoke %s timeout", caller.String())
 	}
 }
 
-func (c *Client) invoke(addr *codec.Addr, seq uint32, payload []byte) error {
+func (c *Client) invoke(addr *codec.Addr, seq uint32, method string, payload []byte, push bool) error {
 	pack := &codec.ReqPack{
 		Addr:    *addr,
 		Session: seq,
+		Method:  method,
 		Payload: payload,
+		Push:    push,
 	}
-
 	writer := netpoll.NewLinkBuffer()
 	if err := codec.EncodeReq(writer, pack); err != nil {
 		return err
@@ -269,7 +276,7 @@ func (c *Client) invoke(addr *codec.Addr, seq uint32, payload []byte) error {
 	return nil
 }
 
-func NewClient(address string, opts ...ClientOption) (*Client, error) {
+func NewClient(address string, opts ...Option) (*Client, error) {
 	options := defaultClientOptions
 	for _, opt := range opts {
 		opt(&options)
@@ -287,10 +294,11 @@ func NewClient(address string, opts ...ClientOption) (*Client, error) {
 func (c *Client) Close() error {
 	c.closing = true
 	// delay close socket
+	var addr = c.Address
 	time.AfterFunc(time.Second*15, func() {
 		if c.conn != nil && c.conn.IsActive() {
 			if err := c.conn.Close(); err != nil {
-				log.Println("close err: " + err.Error())
+				log.Printf("close address:[%s] err:%s", addr, err.Error())
 			}
 			c.conn = nil
 		}
@@ -298,29 +306,16 @@ func (c *Client) Close() error {
 	return nil
 }
 
-func (c *Client) EncodePayload(cmd string, args ...any) ([]byte, error) {
-	var data = [][]byte{[]byte(cmd)}
-	for _, arg := range args {
-		var msg []byte
-		switch v := arg.(type) {
-		case nil:
-			msg = []byte{}
-		case string:
-			msg = []byte(v)
-		case []byte:
-			msg = v
-		default:
-			if enc, err := c.Options.ArgsCodec.Marshal(arg); err != nil {
-				return nil, err
-			} else {
-				msg = enc
-			}
+func (c *Client) EncodePayload(caller *Caller) ([]byte, error) {
+	if caller.Args == nil {
+		return nil, nil
+	}
+	// caller codec preference
+	if caller.PayloadCodec != "" {
+		if pc, ok := codec.GetPayloadCodec(caller.PayloadCodec); ok {
+			return pc.Marshal(caller.Args)
 		}
-		data = append(data, msg)
 	}
-	payload, err := codec.PackPayload(data...)
-	if err != nil {
-		return nil, err
-	}
-	return payload, nil
+	// client codec default
+	return c.Options.PayloadCodec.Marshal(caller.Args)
 }

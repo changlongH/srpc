@@ -1,9 +1,11 @@
 package codec
 
 import (
-	"encoding/binary"
+	"bytes"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/cloudwego/netpoll"
 )
@@ -16,238 +18,190 @@ type (
 	ReqPack struct {
 		Addr    Addr   // 4-7
 		Session uint32 // 8-11
-		//Cmd     string
-		//Message []byte
+		Push    bool   // push package don't need to response
+		Method  string
 		Payload []byte
 	}
 )
 
 func (addr *Addr) String() string {
-	return fmt.Sprintf("(%d:%s)", addr.Id, addr.Name)
+	if addr.Id > 0 {
+		return strconv.FormatUint(uint64(addr.Id), 10)
+	}
+	return strings.TrimPrefix(addr.Name, "@")
 }
 
-// a whole packge of number address
-func unpackReqNumber(pkg netpoll.Reader) (*ReqPack, error) {
-	len := pkg.Len()
-	if len < 8 {
-		return nil, fmt.Errorf("invalid cluster message (size=%d)", len)
+func (req *ReqPack) IsPush() bool {
+	return req.Push
+}
+
+func readReqSessionAndArgs(pkg netpoll.Reader, req *ReqPack) (err error) {
+	if req.Session, err = readSession(pkg); err != nil {
+		return
 	}
 
-	// address(4)
-	bLen, err := pkg.ReadBinary(4)
-	if err != nil {
-		return nil, err
+	if req.Session == 0 {
+		req.Push = true
 	}
-	sid := binary.LittleEndian.Uint32(bLen)
 
-	// session(4)
-	bLen, err = pkg.ReadBinary(4)
-	if err != nil {
-		return nil, err
+	// rpc req must have method
+	var method []byte
+	if method, err = readString(pkg); err != nil || len(method) == 0 {
+		err = fmt.Errorf("call session=%d,addr=%s not method", req.Session, req.Addr.String())
+		return
 	}
-	session := binary.LittleEndian.Uint32(bLen)
-
-	req := &ReqPack{
-		Addr:    Addr{Id: sid},
-		Session: session,
+	// ToUpper first char
+	char := method[0]
+	if char >= 'a' && char <= 'z' {
+		method[0] = char - 32
 	}
+	req.Method = string(method)
 
 	if pkg.Len() > 0 {
-		payload, err := pkg.ReadBinary(pkg.Len())
-		if err != nil {
-			return nil, err
+		if req.Payload, err = readString(pkg); err != nil {
+			return
 		}
-		req.Payload = payload
 	}
-
-	/*
-		// cmd
-		bcmd, err := readOneArgs(pkg)
-		if err != nil {
-			return req, err
-		}
-		req.Cmd = string(bcmd)
-
-		// args
-		data, err := readOneArgs(pkg)
-		if err != nil {
-			return req, err
-		}
-		req.Message = data
-	*/
-	return req, nil
+	return nil
 }
 
-// a whole packge of str address
-func unpackReqStr(pkg netpoll.Reader) (*ReqPack, error) {
-	len := pkg.Len()
-	if len < 2 {
-		return nil, fmt.Errorf("invalid cluster message headersize (size=%d)", len)
+func unpackNumberAddrReq(pkg netpoll.Reader) (req *ReqPack, err error) {
+	if pkg.Len() < 8 {
+		err = fmt.Errorf("invalid message header (size=%d) expect=8", pkg.Len())
+		return
 	}
-	bLen, err := pkg.ReadByte()
-	if err != nil {
-		return nil, err
+	req = &ReqPack{Addr: Addr{}}
+	if req.Addr.Id, err = readUint32(pkg); err != nil {
+		return
 	}
-	namesize := int(bLen)
-	if len < namesize+5 {
-		return nil, fmt.Errorf("invalid cluster message (size=%d)", len)
-	}
-
-	// 1 + namesize
-	sname, err := pkg.ReadString(namesize)
-	if err != nil {
-		return nil, err
-	}
-
-	// session(4)
-	bSession, err := pkg.ReadBinary(4)
-	if err != nil {
-		return nil, err
-	}
-	session := binary.BigEndian.Uint32(bSession)
-	req := &ReqPack{
-		Addr:    Addr{Name: sname},
-		Session: session,
-	}
-	if pkg.Len() > 0 {
-		payload, err := pkg.ReadBinary(pkg.Len())
-		if err != nil {
-			return nil, err
-		}
-		req.Payload = payload
-	}
-	/*
-		// cmd
-		bcmd, err := readOneArgs(pkg)
-		fmt.Println(bcmd)
-		if err != nil {
-			return req, err
-		}
-		req.Cmd = string(bcmd)
-
-		// args
-		data, err := readOneArgs(pkg)
-		fmt.Println(data)
-		if err != nil {
-			return req, err
-		}
-		req.Message = data
-	*/
-
-	return req, nil
+	err = readReqSessionAndArgs(pkg, req)
+	return
 }
 
-// header of int address
-func unpackLargeReqNumber(pkg netpoll.Reader, pending map[uint32]*ReqPack, push bool) (*ReqPack, error) {
-	len := pkg.Len()
-	if len != 12 {
-		return nil, fmt.Errorf("invalid cluster message size %d (multi req must be 13)", len)
-	}
-	// address(4)
-	bLen, err := pkg.ReadBinary(4)
-	if err != nil {
-		return nil, err
-	}
-	sid := binary.LittleEndian.Uint32(bLen)
-	// session(4)
-	if bLen, err = pkg.ReadBinary(4); err != nil {
-		return nil, err
+func unpackStrAddrReq(pkg netpoll.Reader) (req *ReqPack, err error) {
+	if pkg.Len() < 8 {
+		err = fmt.Errorf("invalid message header (size=%d) expect=8", pkg.Len())
+		return
 	}
 
-	session := binary.LittleEndian.Uint32(bLen)
-	req := &ReqPack{
-		Addr:    Addr{Id: sid},
-		Session: session,
+	nameLen, _ := pkg.ReadByte()
+	if pkg.Len() < int(nameLen) {
+		err = fmt.Errorf("invalid req message (size=%d)", pkg.Len()+1)
+		return
 	}
-	// msgsize(4)
-	bSize, err := pkg.ReadBinary(4)
-	if err != nil {
-		return nil, err
+
+	req = &ReqPack{Addr: Addr{}}
+	if req.Addr.Name, err = pkg.ReadString(int(nameLen)); err != nil {
+		return
 	}
-	msgsize := binary.LittleEndian.Uint32(bSize)
-	req.Payload = make([]byte, 0, msgsize)
-	pending[session] = req
-	return nil, nil
+	err = readReqSessionAndArgs(pkg, req)
+	return
 }
 
-// header of str address
-func unpackLargeReqStr(pkg netpoll.Reader, pending map[uint32]*ReqPack, push bool) (*ReqPack, error) {
-	len := pkg.Len()
-	if len < 2 {
-		return nil, fmt.Errorf("invalid request message (size=%d)", len)
-	}
-	bSize, err := pkg.ReadByte()
-	if err != nil {
-		return nil, err
-	}
-	namesize := int(bSize)
-	if len < namesize+8 {
-		return nil, fmt.Errorf("invalid request message (size=%d)", len)
+func unpackNumberAddrPendingHeader(pkg netpoll.Reader, pending map[uint32]*ReqPack, push bool) (_req *ReqPack, err error) {
+	if pkg.Len() != 12 {
+		return nil, fmt.Errorf("invalid cluster message size %d (multi req must be 12)", pkg.Len())
 	}
 
-	// 1 + namesize
-	addr, err := pkg.ReadString(namesize)
-	if err != nil {
-		return nil, err
+	req := &ReqPack{Addr: Addr{}, Push: push}
+	if req.Addr.Id, err = readUint32(pkg); err != nil {
+		return
 	}
-	// session(4)
-	bLen, err := pkg.ReadBinary(4)
-	if err != nil {
-		return nil, err
+	if req.Session, err = readSession(pkg); err != nil {
+		return
 	}
-	session := binary.LittleEndian.Uint32(bLen)
-	req := &ReqPack{
-		Addr:    Addr{Name: addr},
-		Session: session,
+	var bodyLen uint32
+	if bodyLen, err = readUint32(pkg); err != nil {
+		return
 	}
-	// msgsize(4)
-	bLen, err = pkg.ReadBinary(4)
-	if err != nil {
-		return nil, err
-	}
-	msgsize := binary.LittleEndian.Uint32(bLen)
-	req.Payload = make([]byte, 0, msgsize)
-	pending[session] = req
-	return nil, nil
+	// NOTE: payload contain method
+	req.Payload = make([]byte, 0, bodyLen)
+	pending[req.Session] = req
+	return
 }
 
-// part of large package
-func unpackLargeReqPart(pkg netpoll.Reader, pending map[uint32]*ReqPack, final bool) (*ReqPack, error) {
-	sz := pkg.Len()
-	if sz < 4 {
-		return nil, fmt.Errorf("invalid large request part headersz=(%d)", sz)
+func unpackStrAddrPendingHeader(pkg netpoll.Reader, pending map[uint32]*ReqPack, push bool) (_req *ReqPack, err error) {
+	if pkg.Len() < 10 {
+		err = fmt.Errorf("invalid request message (size=%d)", pkg.Len())
+		return
 	}
-	bLen, err := pkg.ReadBinary(4)
-	if err != nil {
+
+	nameLen, _ := pkg.ReadByte()
+	if pkg.Len() < int(nameLen)+8 {
+		err = fmt.Errorf("invalid req message (size=%d)", pkg.Len()+1)
+		return
+	}
+	req := &ReqPack{Addr: Addr{}, Push: push}
+	if req.Addr.Name, err = pkg.ReadString(int(nameLen)); err != nil {
+		return
+	}
+	if req.Session, err = readSession(pkg); err != nil {
+		return
+	}
+	var bodyLen uint32
+	if bodyLen, err = readUint32(pkg); err != nil {
+		return
+	}
+	// NOTE: payload contain method
+	req.Payload = make([]byte, 0, bodyLen)
+	pending[req.Session] = req
+	return
+}
+
+func unpackPendingPart(pkg netpoll.Reader, pending map[uint32]*ReqPack, final bool) (*ReqPack, error) {
+	if pkg.Len() < 4 {
+		return nil, fmt.Errorf("invalid request part headersz=(%d)", pkg.Len())
+	}
+
+	var err error
+	var session uint32
+	if session, err = readSession(pkg); err != nil {
 		return nil, err
 	}
-	session := binary.LittleEndian.Uint32(bLen)
 
 	req, ok := pending[session]
 	if !ok {
-		errmsg := fmt.Sprintf("invalid large request part session=%d", session)
-		return nil, errors.New(errmsg)
+		err = fmt.Errorf("invalid request part session=%d", session)
+		// reply client session error
+		return &ReqPack{Session: session}, err
 	}
-	p, err := pkg.Next(sz - 4)
-	if err != nil {
-		return nil, err
+
+	// read method if it's first part
+	if len(req.Payload) == 0 && len(req.Method) == 0 {
+		// rpc req must have method
+		var method []byte
+		if method, err = readString(pkg); err != nil || len(method) == 0 {
+			err = fmt.Errorf("call session=%d,addr=%s not method", req.Session, req.Addr.String())
+			delete(pending, session)
+			return req, err
+		}
+		// ToUpper first char
+		char := method[0]
+		if char >= 'a' && char <= 'z' {
+			method[0] = char - 32
+		}
+		req.Method = string(method)
 	}
-	req.Payload = append(req.Payload, p...)
-	if final {
-		delete(pending, session)
-		/*
-			args, err := unpackStrings(req.Message)
-			if err != nil {
-				return req, err
-			}
-			req.Cmd = args[0]
-			req.Message = []byte(args[1])
-		*/
+
+	if pkg.Len() > 0 {
+		var payload []byte
+		if payload, err = pkg.ReadBinary(pkg.Len()); err != nil {
+			delete(pending, session)
+			return req, err
+		}
+		req.Payload = append(req.Payload, payload...)
 	}
-	return req, nil
+
+	if !final {
+		return nil, nil
+	}
+
+	delete(pending, session)
+	req.Payload, _, err = decodeString(req.Payload)
+	return req, err
 }
 
-func DecodeReq(pkg netpoll.Reader, largeReq map[uint32]*ReqPack) (*ReqPack, error) {
+func DecodeReq(pkg netpoll.Reader, pendingPack map[uint32]*ReqPack) (*ReqPack, error) {
 	defer pkg.Release()
 
 	len := pkg.Len()
@@ -259,154 +213,165 @@ func DecodeReq(pkg netpoll.Reader, largeReq map[uint32]*ReqPack) (*ReqPack, erro
 	if err != nil {
 		return nil, err
 	}
-	fmt.Println("---msg type:", msgType)
 
 	switch msgType {
 	case 0:
-		return unpackReqNumber(pkg)
+		return unpackNumberAddrReq(pkg)
 	case 1:
 		// request
-		return unpackLargeReqNumber(pkg, largeReq, false)
+		return unpackNumberAddrPendingHeader(pkg, pendingPack, false)
 	case '\x41':
 		// push
-		return unpackLargeReqNumber(pkg, largeReq, true)
+		return unpackNumberAddrPendingHeader(pkg, pendingPack, true)
 	case 2:
-		return unpackLargeReqPart(pkg, largeReq, false)
+		return unpackPendingPart(pkg, pendingPack, false)
 	case 3:
-		return unpackLargeReqPart(pkg, largeReq, true)
+		return unpackPendingPart(pkg, pendingPack, true)
 	case 4:
-		return nil, errors.New("nonsupport trace msg")
+		return nil, errors.New("nonsupport skynet trace")
 	case '\x80':
-		return unpackReqStr(pkg)
+		return unpackStrAddrReq(pkg)
 	case '\x81':
 		// request
-		return unpackLargeReqStr(pkg, largeReq, false)
+		return unpackStrAddrPendingHeader(pkg, pendingPack, false)
 	case '\xc1':
 		// push
-		return unpackLargeReqStr(pkg, largeReq, true)
+		return unpackStrAddrPendingHeader(pkg, pendingPack, true)
 	default:
-		return nil, fmt.Errorf("invalid req package (type=%d)", msgType)
+		return nil, fmt.Errorf("invalid req package type=(%d)", msgType)
 	}
 }
 
-func EncodeReq(writer netpoll.Writer, msg *ReqPack) error {
-	payload := msg.Payload
-	sz := uint32(len(payload))
-
-	var isPush = false
-	var session = msg.Session
-	if session <= 0 {
-		isPush = true
-	}
-
-	if msg.Addr.Id == 0 && msg.Addr.Name == "" {
-		return errors.New("invalid request addr")
-	}
-
-	// first WORD is size of the package with big-endian
-	if sz < PartSize {
-		if msg.Addr.Id > 0 {
-			header, _ := writer.Malloc(2)
-			// header byte(1)+addr(4)+session(4)=9
-			binary.BigEndian.PutUint16(header, uint16(sz+9))
-			writer.WriteByte(0) // type 0
-			addr, err := writer.Malloc(4)
-			if err != nil {
-				return err
-			}
-			binary.LittleEndian.PutUint32(addr, msg.Addr.Id)
-		} else {
-			header, err := writer.Malloc(2)
-			if err != nil {
-				return err
-			}
-			namelen := uint32(len(msg.Addr.Name))
-			binary.BigEndian.PutUint16(header, uint16(sz+6+namelen))
-			writer.WriteByte(0x80) // type 0x80
-			writer.WriteByte(byte(namelen))
-			writer.WriteString(msg.Addr.Name)
+func writeReqPack(writer netpoll.Writer, req *ReqPack, buf *bytes.Buffer) (err error) {
+	bodyLen := buf.Len()
+	if req.Addr.Id > 0 {
+		// header type(1)+addr(4)+session(4)+bodyLen=9+bodyLen
+		if err = writeHeader(writer, uint16(9+bodyLen)); err != nil {
+			return
 		}
-		wsession, err := writer.Malloc(4)
-		if err != nil {
-			return err
+		// type = 0
+		writer.WriteByte(0)
+		if err = writeUint32(writer, req.Addr.Id); err != nil {
+			return
 		}
-		binary.LittleEndian.PutUint32(wsession, session)
-		writer.WriteBinary(payload)
 	} else {
-		if msg.Addr.Id > 0 {
-			header, err := writer.Malloc(2)
-			if err != nil {
-				return err
-			}
-			// multi part header byte(1)+addr(4)+session(4)+msgsize(4)=13
-			binary.BigEndian.PutUint16(header, uint16(sz+13))
-			if isPush {
-				writer.WriteByte(0x41)
-			} else {
-				writer.WriteByte(1)
-			}
-			addr, err := writer.Malloc(4)
-			if err != nil {
-				return err
-			}
-			binary.LittleEndian.PutUint32(addr, msg.Addr.Id)
-		} else {
-			header, err := writer.Malloc(2)
-			if err != nil {
-				return err
-			}
-			namelen := uint32(len(msg.Addr.Name))
-			// multi part header byte(1)+addr(1)+session(4)+msgsize(4)=10
-			binary.BigEndian.PutUint16(header, uint16(namelen+10))
-			if isPush {
-				writer.WriteByte(0xc1)
-			} else {
-				writer.WriteByte(0x81)
-			}
-			writer.WriteByte(byte(namelen))
-			writer.WriteString(msg.Addr.Name)
+		nameLen := len(req.Addr.Name)
+		// header type(1)+nameSize(1)+session(4) + nameLen + bodyLen
+		if err = writeHeader(writer, uint16(6+nameLen+bodyLen)); err != nil {
+			return
 		}
-		wsession, err := writer.Malloc(4)
-		if err != nil {
-			return err
-		}
-		binary.LittleEndian.PutUint32(wsession, session)
-		wsize, err := writer.Malloc(4)
-		if err != nil {
-			return err
-		}
-		binary.LittleEndian.PutUint32(wsize, sz)
-
-		part := int((sz-1)/PartSize + 1)
-		index := uint32(0)
-		for i := 0; i < part; i++ {
-			var s uint32
-			var bType byte
-			if sz > PartSize {
-				s = PartSize
-				bType = 2 // multi part
-			} else {
-				s = sz
-				bType = 3 // multi end
-			}
-			// type(1)+session(4)=5
-			header, err := writer.Malloc(2)
-			if err != nil {
-				return err
-			}
-			binary.BigEndian.PutUint16(header, uint16(s+5))
-			writer.WriteByte(bType)
-			session, err := writer.Malloc(4)
-			if err != nil {
-				return err
-			}
-			binary.LittleEndian.PutUint32(session, msg.Session)
-			writer.WriteBinary(payload[index : index+s])
-			index = s
-			sz = sz - s
-		}
+		// type 0x80
+		writer.WriteByte(0x80)
+		writer.WriteByte(byte(nameLen))
+		writer.WriteString(req.Addr.Name)
 	}
-	return nil
+	// session = 0 if it is push pack
+	session := req.Session
+	if req.IsPush() {
+		session = 0
+	}
+	if err = writeSession(writer, session); err != nil {
+		return
+	}
+	_, err = writer.WriteBinary(buf.Bytes())
+	return
+}
+
+func writeLargeReqPack(writer netpoll.Writer, req *ReqPack, buf *bytes.Buffer) (err error) {
+	bodyLen := buf.Len()
+	if req.Addr.Id > 0 {
+		// multi part header byte(1)+addr(4)+session(4)+msgsize(4)=13
+		if err = writeHeader(writer, uint16(13)); err != nil {
+			return
+		}
+		if req.Push {
+			err = writer.WriteByte(0x41)
+		} else {
+			err = writer.WriteByte(1)
+		}
+		if err != nil {
+			return
+		}
+		if err = writeUint32(writer, req.Addr.Id); err != nil {
+			return
+		}
+	} else {
+		nameLen := len(req.Addr.Name)
+		// multi part header byte(1)+addr(1)+session(4)+msgsize(4)+nameLne=10+nameLen
+		if err = writeHeader(writer, uint16(nameLen+10)); err != nil {
+			return
+		}
+		if req.Push {
+			err = writer.WriteByte(0xc1)
+		} else {
+			err = writer.WriteByte(0x81)
+		}
+		if err != nil {
+			return
+		}
+		writer.WriteByte(byte(nameLen))
+		writer.WriteString(req.Addr.Name)
+	}
+	// fill session
+	if err = writeSession(writer, req.Session); err != nil {
+		return
+	}
+	// body size
+	if err = writeUint32(writer, uint32(bodyLen)); err != nil {
+		return
+	}
+
+	// body part
+	payload := buf.Bytes()
+	remainLen := bodyLen
+	part := (remainLen-1)/PartSize + 1
+	index := 0
+	for i := 0; i < part; i++ {
+		var sz int
+		var bType byte
+		if remainLen > PartSize {
+			sz = PartSize
+			bType = 2 // multi part
+		} else {
+			sz = remainLen
+			bType = 3 // multi end
+		}
+		// type(1)+session(4)+sz
+		if err = writeHeader(writer, uint16(5+sz)); err != nil {
+			return
+		}
+
+		if err = writer.WriteByte(bType); err != nil {
+			return
+		}
+
+		if err = writeSession(writer, req.Session); err != nil {
+			return
+		}
+		if _, err = writer.WriteBinary(payload[index : index+sz]); err != nil {
+			return
+		}
+		index = sz
+		remainLen = remainLen - sz
+	}
+	return
+}
+
+func EncodeReq(writer netpoll.Writer, req *ReqPack) (err error) {
+	if req.Addr.Id == 0 && req.Addr.Name == "" {
+		err = errors.New("invalid request addr")
+		return
+	}
+
+	buf := &bytes.Buffer{}
+	if err = writeStringsToBuf(buf, []byte(req.Method), req.Payload); err != nil {
+		return
+	}
+	if buf.Len() < PartSize {
+		return writeReqPack(writer, req, buf)
+	} else {
+		return writeLargeReqPack(writer, req, buf)
+	}
 }
 
 func GetServiceAddress(address interface{}) (*Addr, error) {
@@ -442,12 +407,4 @@ func GetServiceAddress(address interface{}) (*Addr, error) {
 		return nil, errors.New("invalid skynet service address")
 	}
 	return addr, nil
-}
-
-func PackPayload(args ...[]byte) ([]byte, error) {
-	return packStrings(args...)
-}
-
-func UnpackPayload(data []byte) ([]string, error) {
-	return unpackStrings(data)
 }
