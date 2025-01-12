@@ -5,66 +5,64 @@ skynet cluster with golang rpc
 - [netpoll Golang高性能网络库](https://github.com/cloudwego/netpoll/blob/develop/README_CN.md)
 - [skynet_cluster编码设计](https://blog.codingnow.com/2017/03/skynet_cluster.html)
 
-支持golang和skynet cluster通信。无侵入设计无需修改任何skyne代码，简单的api设计上手即用。
+支持`golang`和`skynet cluster`通信。无侵入设计无需修改任何`skyne`代码，简单的api设计上手即用。
 
-- Golang 无状态微服务（例如登陆大厅），有丰富的生态和框架可以选择。大量的第三方库。
-- Skynet 有状态的服务，使用lua脚本可以方便编写业务和实现热更。拥有高的性能和虚拟沙盒隔离。
+- `Golang` 无状态微服务（例如登陆大厅），有丰富的生态和框架可以选择。大量的第三方库。
+- `Skynet` 有状态的服务，使用lua无需编译可以高效业务开发和热更。skynet高的性能沙盒隔离。
 
 # 支持特性 #
 
-- 支持payload codec 配置可选jsong/msgpack（建议使用msgpack）
-- skynet 提供 libsrpc.lua 引入即可使用
-- golang 支持 cluster节点动态变更和自动重连
-- golang 支持 client级别和call级别的payload codec
-- golang 支持 SkynetContext上下文传递更方便做链路追踪和分析
-- golang 和 skynet都支持profile统计消耗
+- 支持`payload codec` 配置可选`jsong/msgpack`（建议使用`msgpack`）
+- `skynet` 提供 `libsrpc.lua` 参考引入即可使用
+- `golang` 支持 `cluster`节点动态变更和自动重连
+- `golang` 支持 `client`级别和call级别的`payload codec`
+- `golang` 支持 `SkynetContext`上下文传递更方便做链路追踪和分析
+- `golang` 和 `skynet`都支持`profile`统计消耗
 
 ## golang API ##
 
 服务端：
 
-- server.Open("127.0.0.1:2531") 开启集群端口监听
-- server.Shutdown(eventLoop netpoll.EventLoop, timeout time.Duration) 关闭集群监听
+- `server.Open("127.0.0.1:2531")` 开启集群端口监听
+- `server.Shutdown(eventLoop netpoll.EventLoop, timeout time.Duration)` 关闭集群监听
 
-- server.Register(rcvr any, name string, opts ...Option) error 注册一个服务
-  - server.WithPayloadCodec(&payloadcodec.MsgPack{}) 指定payload打包方式默认为msgpack
-  - server.WithAccessLog(handler) 指定访问日志处理回调，如果传入nil 则使用默认输出日志。不调用则不输出
-- server.GetRegisterMethods(name string) ([]string, error) 获取成功注册的方法，可用于开发调试。
-- server.SetRecoveryHandler(handle func(string, any)) 服务器消息panic 回调
+- `server.Register(rcvr any, name string, opts ...Option) error` 注册一个服务
+  - `server.WithPayloadCodec(&payloadcodec.MsgPack{})` 指定payload打包方式默认为msgpack
+  - `server.WithAccessLog(handler)` 指定访问日志处理回调，如果传入nil 则使用默认输出日志。不调用则不输出
+- `server.GetRegisterMethods(name string) ([]string, error)` 获取成功注册的方法，可用于开发调试。
+- `server.SetRecoveryHandler(handle func(string, any))` 服务器消息panic 回调
+- 更多用法参考 [server_test](./srpc_server_test.go)
 
 客户端：
 
-- cluster.Register(node string, address string, opts ...client.Option) 注册一个远程skynet节点
-- cluster.Remove(node string) 移除一个节点
-- cluster.Query(node string) *client.Client 查询一个已经注册节点
-- cluster.ReloadCluster(nodes map[string]string, opts ...client.Option) 批量注册或者更新节点（如何没有变化不会产生影响）
+- `cluster.Register(node string, address string, opts ...client.Option)` 注册一个远程skynet节点
+- `cluster.Remove(node string)` 移除一个节点
+- `cluster.Query(node string) *client.Client` 查询一个已注册节点
+- `cluster.ReloadCluster(nodes map[string]string, opts ...client.Option)` 批量注册或者更新节点（如何没有变化不会产生影响）
 
-- sprc.Call(node string, addr any, cmd string, args any, reply any) error 通过node和addr支持一个简单的rpc请求,返回error表示调用结果
-- srpc.Send(node string, addr any, cmd string, args any) error 发送消息，error表示是否失败
-- sprc.Invoke(caller *client.Caller) error 支持构建复杂的调用。WithTimeout/WithPayloadCodec等
+- `sprc.Call(node string, addr any, cmd string, args any, reply any) error` 通过node和addr支持一个简单的rpc请求,返回error表示调用结果
+- `srpc.Send(node string, addr any, cmd string, args any) error` 发送消息，error表示是否失败
+- `sprc.Invoke(caller *client.Caller) error` 支持构建复杂的调用。WithTimeout/WithPayloadCodec等
+
+- 更多用法参考 [client_test](./srpc_client_test.go)
 
 ## skynet API ##
 
 skynet_example 提供 [libsrpc](./skynet_example/libsrpc.lua) 一个很简单的封装参考（100行代码）
 
-- sprc.set_default_codec(name) 设置payload 打包方式，默认msgpack
+- `sprc.set_default_codec(name)` 设置payload 打包方式，默认msgpack
 
 作为客户端请求：
 
-- srpc.send(node, sname, cmd, req) 发送消息到golang 不阻塞
-- srpc.call(node, sname, cmd, req) 阻塞等待，两个返回值：ok表示调用是否成功。ret 表示内容
+- `srpc.send(node, sname, cmd, req)` 发送消息到golang 不阻塞
+- `srpc.call(node, sname, cmd, req)` 阻塞等待，两个返回值：ok表示调用是否成功。ret 表示内容
 
 作为服务端分发：
 
-- srpc.new_dispatcher(svc) 初始化一个消息分发器 disp, disp 仅包含一个router方法注册回调函数
-  - disp.router("SET", function(msg) end) 注册一个SET方法到svc
+- `srpc.new_dispatcher(svc)` 初始化一个消息分发器 disp, disp 仅包含一个router方法注册回调函数
+  - `disp.router("SET", function(msg) end)` 注册一个SET方法到svc
 
 - 其他参考[skynet_example测试用例](./skynet_example/main_test.lua)
-
-# 更多用法 #
-
-客户端用法参考 [client_test](./srpc_client_test.go)
-服务器用法参考 [server_test](./srpc_server_test.go)
 
 # 设计思路 #
 
@@ -119,4 +117,3 @@ end
 > 如果使用json作为codec 则需要注意lua空table问题，建议encode 为`null`, 并且json序列化必须为`lua table`和`golang struct/map`,不支持`int/string/bool`等类型
 
 > 默认skynet和golang使用msgpack作为codec,支持原子类型和复杂的类型。
-
