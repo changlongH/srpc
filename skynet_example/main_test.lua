@@ -23,16 +23,26 @@ db.router("SLEEP", function(ti)
     return ti
 end)
 
+-- client call with payload codec text
+function db.TEXT(msg)
+    skynet.sleep(1 * 100)
+    return msg
+end
+
+local disp_test = true
+local call_test = false
 skynet.start(function()
-    skynet.dispatch("lua", function(session, addr, cmd, ...)
-        cmd = cmd:upper()
-        local f = db[cmd]
-        if f then
-            skynet.ret(skynet.pack(f(...)))
-        else
-            error(string.format("Unknown command %s", tostring(cmd)))
-        end
-    end)
+    if disp_test then
+        skynet.dispatch("lua", function(session, addr, cmd, ...)
+            cmd = cmd:upper()
+            local f = db[cmd]
+            if f then
+                skynet.ret(skynet.pack(f(...)))
+            else
+                error(string.format("Unknown command %s", tostring(cmd)))
+            end
+        end)
+    end
 
     cluster.reload({
         db = "127.0.0.1:2528",
@@ -44,6 +54,9 @@ skynet.start(function()
     cluster.open("db")
     cluster.open("db2")
 
+    if not call_test then
+        return
+    end
     local node = "golang"
     local sname = "airth"
     srpc.send(node, sname, "Add", { a = 1, b = 2 })

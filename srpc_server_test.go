@@ -119,7 +119,7 @@ func TestRpcServer(t *testing.T) {
 		t.Error(err)
 		return
 	} else {
-		log.Println(methods)
+		log.Println("methods:", methods)
 	}
 
 	node := "test"

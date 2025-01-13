@@ -8,8 +8,8 @@ import (
 )
 
 type Options struct {
-	Timeout      time.Duration
 	PayloadCodec codec.PayloadCodec
+	CallTimeout  time.Duration
 }
 
 type Option func(*Options)
@@ -20,13 +20,13 @@ func WithPayloadCodec(argsCodec codec.PayloadCodec) Option {
 	}
 }
 
-func WithTimeout(t time.Duration) Option {
+func WithCallTimeout(t time.Duration) Option {
 	return func(o *Options) {
-		o.Timeout = t
+		o.CallTimeout = t
 	}
 }
 
 var defaultClientOptions = Options{
-	Timeout:      time.Second * 5,
+	CallTimeout:  time.Second * 5,
 	PayloadCodec: payloadcodec.MsgPack{},
 }

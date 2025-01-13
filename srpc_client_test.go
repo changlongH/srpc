@@ -103,13 +103,21 @@ func TestClusterClient(t *testing.T) {
 		t.Error(err)
 		return
 	}
-
-	// test with timeout. not pararms and reply
-	caller, err = client.NewCaller("db2", "sdb", "SLEEP", 5).WithTimeout(3 * time.Second).Done()
-	if err != nil {
-		t.Error(err)
+	// test call with payload codec text
+	var replyText string
+	var text = "hello world"
+	caller = client.NewCaller("db2", "sdb", "TEXT", text).WithPayloadCodec("text").WithReply(&replyText)
+	if err = srpc.Invoke(caller); err != nil {
+		t.Error("call with payload codec failed", err)
 		return
 	}
+	if !reflect.DeepEqual(text, replyText) {
+		t.Errorf("call with payload codec failed, raw=%s,reply=%s", text, replyText)
+		return
+	}
+
+	// test with timeout. not pararms and reply
+	caller = client.NewCaller("db2", "sdb", "SLEEP", 5).WithTimeout(3 * time.Second)
 	if err = srpc.Invoke(caller); err == nil {
 		t.Error("timeout call failed. not timeout")
 		return

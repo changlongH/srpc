@@ -3,6 +3,7 @@ package codec
 import (
 	"bytes"
 	"crypto/rand"
+	"fmt"
 	"reflect"
 	"testing"
 )
@@ -79,5 +80,53 @@ func TestCombineType(t *testing.T) {
 	tp, v = uncombineType(header)
 	if int(tp) != 4 || int(v) != 0 {
 		panic("combine test faile")
+	}
+}
+
+func TestPayloadCodec(t *testing.T) {
+	type Args struct {
+		Key string `json:"key" msgpack:"key"`
+		Val string `json:"val" msgpack:"val"`
+	}
+	args := Args{Key: "foo", Val: "foobar"}
+	var c PayloadCodec
+	var ok bool
+	var err error
+	for _, name := range []string{"json", "msgpack"} {
+		if c, ok = GetPayloadCodec(name); !ok {
+			continue
+		}
+		var out []byte
+		if out, err = c.Marshal(args); err != nil {
+			t.Error(err.Error())
+			return
+		}
+		var v = Args{}
+		if err = c.Unmarshal(out, &v); err != nil {
+			t.Error(err.Error())
+			return
+		}
+		fmt.Println(v, args)
+		if !reflect.DeepEqual(v, args) {
+			t.Error("not equal codec " + name)
+			return
+		}
+	}
+
+	msg := []byte("foobar")
+	if c, ok = GetPayloadCodec("text"); ok {
+		out, err := c.Marshal(&msg)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		var v []byte
+		if err = c.Unmarshal(out, &v); err != nil {
+			t.Error(err)
+			return
+		}
+		if !reflect.DeepEqual(v, msg) {
+			t.Errorf("text: raw=%v,dec=%v", msg, v)
+		}
 	}
 }

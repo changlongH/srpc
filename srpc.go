@@ -2,7 +2,6 @@ package srpc
 
 import (
 	"errors"
-	"time"
 
 	"github.com/changlongH/srpc/client"
 	"github.com/changlongH/srpc/cluster"
@@ -40,7 +39,7 @@ reply: providing a new value for the reply. value type must be exported. *sturct
 return waits for it to complete or timeout(default 30s) and returns its error status.
 */
 func Call(node string, addr any, cmd string, args any, reply any) error {
-	caller := client.NewCaller(node, addr, cmd, args).WithReply(reply).WithTimeout(30 * time.Second)
+	caller := client.NewCaller(node, addr, cmd, args).WithReply(reply)
 	return Invoke(caller)
 }
 

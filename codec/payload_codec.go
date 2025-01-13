@@ -5,6 +5,7 @@ import payloadcodec "github.com/changlongH/srpc/payload_codec"
 var payloadCodecs = map[string]PayloadCodec{
 	"json":    payloadcodec.Json{},
 	"msgpack": payloadcodec.MsgPack{},
+	"text":    payloadcodec.Text{},
 }
 
 type PayloadCodec interface {

@@ -15,9 +15,9 @@ import (
 
 type (
 	Req struct {
-		Error error
-		Reply any
-		Done  chan *Req
+		Caller *Caller
+		Error  error
+		Done   chan *Req
 	}
 
 	Client struct {
@@ -55,7 +55,7 @@ func (c *Client) Seq() uint32 {
 }
 
 func (c *Client) decodeRspArgs(req *Req, msg *codec.RespPack) {
-	if req.Reply == nil {
+	if req.Caller.Reply == nil {
 		return
 	}
 
@@ -68,16 +68,12 @@ func (c *Client) decodeRspArgs(req *Req, msg *codec.RespPack) {
 		return
 	}
 
-	switch reply := req.Reply.(type) {
-	case *string:
-		*reply = string(msg.Payload)
-	case *[]byte:
-		*reply = msg.Payload
-	default:
-		pc := c.Options.PayloadCodec
-		if err := pc.Unmarshal(msg.Payload, reply); err != nil {
-			req.Error = errors.New("payload unmarshal err: " + err.Error())
-		}
+	pcodec := c.Options.PayloadCodec
+	if req.Caller.PayloadCodec != nil {
+		pcodec = req.Caller.PayloadCodec
+	}
+	if err := pcodec.Unmarshal(msg.Payload, req.Caller.Reply); err != nil {
+		req.Error = errors.New("payload unmarshal err: " + err.Error())
 	}
 }
 
@@ -227,8 +223,8 @@ func (c *Client) Invoke(caller *Caller) error {
 	var seq = c.Seq()
 	if !caller.IsPush() {
 		req = &Req{
-			Reply: caller.Reply,
-			Done:  make(chan *Req),
+			Caller: caller,
+			Done:   make(chan *Req),
 		}
 		c.pending[seq] = req
 	}
@@ -245,6 +241,10 @@ func (c *Client) Invoke(caller *Caller) error {
 
 	if caller.IsPush() {
 		return nil
+	}
+
+	if caller.Timeout == 0 {
+		caller.Timeout = c.Options.CallTimeout
 	}
 
 	// wait call done
@@ -310,12 +310,12 @@ func (c *Client) EncodePayload(caller *Caller) ([]byte, error) {
 	if caller.Args == nil {
 		return nil, nil
 	}
+
+	pcodec := c.Options.PayloadCodec
 	// caller codec preference
-	if caller.PayloadCodec != "" {
-		if pc, ok := codec.GetPayloadCodec(caller.PayloadCodec); ok {
-			return pc.Marshal(caller.Args)
-		}
+	if caller.PayloadCodec != nil {
+		pcodec = caller.PayloadCodec
 	}
 	// client codec default
-	return c.Options.PayloadCodec.Marshal(caller.Args)
+	return pcodec.Marshal(caller.Args)
 }

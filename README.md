@@ -12,10 +12,10 @@ skynet cluster with golang rpc
 
 # 支持特性 #
 
-- 支持`payload codec` 配置可选`jsong/msgpack`（建议使用`msgpack`）
+- 支持`payload codec` 配置可选`json/msgpack`（建议使用`msgpack`）,支持自定义
 - `skynet` 提供 `libsrpc.lua` 参考引入即可使用
 - `golang` 支持 `cluster`节点动态变更和自动重连
-- `golang` 支持 `client`级别和call级别的`payload codec`
+- `golang` 支持 `client`级别和`call`级别的`payload codec`
 - `golang` 支持 `SkynetContext`上下文传递更方便做链路追踪和分析
 - `golang` 和 `skynet`都支持`profile`统计消耗
 

@@ -18,7 +18,8 @@ type (
 		Args         any
 		Reply        any
 		Timeout      time.Duration
-		PayloadCodec string
+		codecName    string // withPayloadCodec
+		PayloadCodec codec.PayloadCodec
 		push         bool // not wait reply
 	}
 )
@@ -51,7 +52,7 @@ func (c *Caller) WithPush() *Caller {
 
 // WithPayloadCodec registered name, For this call only
 func (c *Caller) WithPayloadCodec(name string) *Caller {
-	c.PayloadCodec = name
+	c.codecName = name
 	return c
 }
 
@@ -78,7 +79,14 @@ func (c *Caller) Done() (*Caller, error) {
 		if !isExportedOrBuiltinType(replyType) {
 			return nil, fmt.Errorf("srpc.Call: reply type is not exported: %q", replyType)
 		}
+	}
 
+	if c.codecName != "" {
+		if pcodec, ok := codec.GetPayloadCodec(c.codecName); !ok {
+			return nil, fmt.Errorf("srpc.Call: payload codec not found: %s", c.codecName)
+		} else {
+			c.PayloadCodec = pcodec
+		}
 	}
 
 	return c, nil
