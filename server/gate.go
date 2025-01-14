@@ -52,18 +52,21 @@ func handle(ctx context.Context, conn netpoll.Connection) error {
 	return nil
 }
 
-func Open(address string) (netpoll.EventLoop, error) {
+// Open open address with netpoll.Option
+// opts disable WithOnPrepare and WithOnConnect
+func Open(address string, ops ...netpoll.Option) (netpoll.EventLoop, error) {
 	listener, err := netpoll.CreateListener("tcp", address)
 	if err != nil {
 		return nil, err
 	}
 
-	eventLoop, err := netpoll.NewEventLoop(
-		handle,
+	ops = append(ops,
 		netpoll.WithOnPrepare(prepare),
 		netpoll.WithOnConnect(connect),
-		netpoll.WithReadTimeout(time.Second),
+		//netpoll.WithReadTimeout(time.Second),
 	)
+
+	eventLoop, err := netpoll.NewEventLoop(handle, ops...)
 	if err != nil {
 		return nil, err
 	}

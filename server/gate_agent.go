@@ -53,6 +53,7 @@ func (agent *GateAgent) Start() {
 
 	var closeCh = make(chan struct{})
 	agent.conn.AddCloseCallback(func(conn netpoll.Connection) error {
+		log.Printf("close connect %s\n", conn.RemoteAddr().String())
 		close(closeCh)
 		agent.wqueue = nil
 		return nil
