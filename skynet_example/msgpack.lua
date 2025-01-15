@@ -43,6 +43,8 @@ local type, pcall, pairs, select = type, pcall, pairs, select
 --]]----------------------------------------------------------------------------
 local encode_value -- forward declaration
 
+local encode_empty_table_as_null = false
+
 local function is_an_array(value)
 	local expected = 1
 	for k in pairs(value) do
@@ -125,6 +127,10 @@ local encoder_functions = {
 	end,
 	['table'] = function(value)
 		if is_an_array(value) then -- it seems to be a proper Lua array
+			if #value == 0 and encode_empty_table_as_null then
+				return pack('B', 0xc0)
+			end
+
 			local elements = {}
 			for i, v in pairs(value) do
 				elements[i] = encode_value(v)
@@ -320,6 +326,14 @@ end
 return {
 	_AUTHOR = 'Sebastian Steinhauer <s.steinhauer@yahoo.de>',
 	_VERSION = '0.6.1',
+
+	encode_empty_table_as_null = function (flag)
+		if flag then
+			encode_empty_table_as_null = true
+		else
+			encode_empty_table_as_null = false
+		end
+	end,
 
 	-- primary encode function
 	encode = function(...)

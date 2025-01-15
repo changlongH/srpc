@@ -14,7 +14,12 @@ skynet cluster with golang rpc
 
 # 支持特性 #
 
-- 支持`payload codec` 配置可选`json/msgpack`（建议使用`msgpack`）,支持自定义
+- 支持`payload codec` 配置可选`json/msgpack`（建议使用`msgpack`),支持自定义
+
+> 注意`lua t = {}` 不区分`map/array`导致转`Go`时候类型不匹配。建议 [encode_empty_table_as_null](./skynet_example/libsrpc.lua)
+
+> msgpack仓库中的源码已经修改，cjson可以参考cloudwu/cjson 中encode_table_as_array实现修改。
+
 - `skynet` 提供 `libsrpc.lua` 参考引入即可使用
 - `golang` 支持 `cluster`节点动态变更和自动重连
 - `golang` 支持 `client`级别和`call`级别的`payload codec`

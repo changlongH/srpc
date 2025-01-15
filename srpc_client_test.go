@@ -28,7 +28,7 @@ func TestClusterClient(t *testing.T) {
 
 	errs := cluster.ReloadCluster(nodes, client.WithPayloadCodec(&payloadcodec.MsgPack{}))
 	if errs != nil {
-		t.Errorf("register cluster nodes failed cnt: %d", len(errs))
+		t.Errorf("register cluster nodes failed count: %d", len(errs))
 		return
 	}
 
@@ -42,11 +42,12 @@ func TestClusterClient(t *testing.T) {
 		return
 	}
 
+	// lua empty table enocde as null see [msgpack](./skynet_example/msgpack.lua)
 	var pongMsg = map[string]string{}
-	var pingMsg = map[string]string{"ping": "pong"}
+	var pingMsg = map[string]string{}
 	err = srpc.Call("db", "sdb", "PING", pingMsg, &pongMsg)
-	if err != nil || !reflect.DeepEqual(pingMsg, pongMsg) {
-		t.Error("PING err:", err)
+	if err != nil || pongMsg != nil {
+		t.Error("PING err:", err, pingMsg, pongMsg)
 		return
 	}
 

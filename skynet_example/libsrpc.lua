@@ -5,8 +5,9 @@ local cjson = require("cjson")
 local msgpack = require("msgpack")
 
 local function new_json_codec()
+    -- encode empty table as null is custom cjson api
+    -- fork from cloudwu/cjson
     cjson.encode_empty_table_as_null(true)
-    --cjson.encode_empty_table_as_null(false)
     local encoder = {
         encode = cjson.encode,
         decode = cjson.decode,
@@ -15,6 +16,9 @@ local function new_json_codec()
 end
 
 local function new_msgpack_codec()
+    -- encode empty table as null is custom msgpack api
+    -- see ./skynet_example/msgpack.lua
+    msgpack.encode_empty_table_as_null(true)
     local encoder = {
         encode = msgpack.encode_one,
         decode = msgpack.decode_one,
