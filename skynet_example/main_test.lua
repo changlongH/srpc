@@ -1,15 +1,26 @@
 local skynet = require("skynet")
 local cluster = require("skynet.cluster")
-local srpc = require("srpc")
+local srpc = require("libsrpc")
 
-local db = srpc.new_dispatcher({ data = {} })
-db.router("SETX", function(msg)
+srpc.set_default_codec("msgpack")
+srpc.profile = true
+
+-- wrap srpc.router
+local db = setmetatable({ data = {} }, {
+    __index = {
+        router = function(self, cmd, callback)
+            return srpc.router(self, cmd, callback)
+        end,
+    },
+})
+
+db:router("SETX", function(msg)
     local last = db.data[msg.key]
     db.data[msg.key] = msg.val
     return { succ = true, last = last }
 end)
 
-db.router("GETX", function(msg)
+db:router("GETX", function(msg)
     if not msg.key then
         return nil
     end
@@ -17,12 +28,19 @@ db.router("GETX", function(msg)
     return msg
 end)
 
-db.router("SLEEP", function(ti)
+db:router("SLEEP", function(ti)
     ti = (ti or 0) * 100
     skynet.sleep(ti)
     return ti
 end)
 
+-- raw srpc api equal db:router("PING", cb)
+srpc.router(db, "PING", function(msg)
+    skynet.error("ping")
+    return msg
+end)
+
+-- raw skynet dispatch api
 -- client call with payload codec text
 function db.TEXT(msg)
     skynet.sleep(1 * 100)
@@ -61,16 +79,16 @@ skynet.start(function()
     local sname = "airth"
     srpc.send(node, sname, "Add", { a = 1, b = 2 })
     local ok, ret = srpc.call(node, sname, "Add", { a = 1, b = 2 })
-    assert(ok and ret.c == 3)
+    assert(ok and ret and ret.c == 3)
 
     ok, ret = srpc.call(node, sname, "Div", { a = 4, b = 2 })
-    assert(ok and ret.c == 2)
+    assert(ok and ret and ret.c == 2)
 
     ok, ret = srpc.call(node, sname, "Div", { a = 4, b = 0 })
     assert(not ok)
 
     ok, ret = srpc.call(node, sname, "Mul", { a = 2, b = 3 })
-    assert(ok and ret.c == 6)
+    assert(ok and ret and ret.c == 6)
 
     ok, ret = srpc.call(node, sname, "Mul")
     assert(not ok, ret)
@@ -95,14 +113,14 @@ skynet.start(function()
 
     local values = { "", "1", "1.1", "{ a = 1 }" }
     ok, ret = srpc.call(node, sname, "EchoSlice", values)
-    assert(ok, ret)
+    assert(ok and ret, ret)
     for i, v in ipairs(values) do
         assert(v == ret[i], v)
     end
 
     local map = { a = 1, b = 2 }
     ok, ret = srpc.call(node, sname, "EchoMap", map)
-    assert(ok, ret)
+    assert(ok and ret, ret)
     for i, v in pairs(map) do
         assert(v == ret[i], v)
     end

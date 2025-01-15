@@ -21,7 +21,7 @@ skynet cluster with golang rpc
 
 ## golang API ##
 
-服务端：
+服务端分发skynet请求：
 
 - `server.Open("127.0.0.1:2531")` 开启集群端口监听
 - `server.Shutdown(eventLoop netpoll.EventLoop, timeout time.Duration)` 关闭集群监听
@@ -33,7 +33,7 @@ skynet cluster with golang rpc
 - `server.SetRecoveryHandler(handle func(string, any))` 服务器消息panic 回调
 - 更多用法参考 [server_test](./srpc_server_test.go)
 
-客户端：
+客户端请求skynet服务：
 
 - `cluster.Register(node string, address string, opts ...client.Option)` 注册一个远程skynet节点
 - `cluster.Remove(node string)` 移除一个节点
@@ -52,15 +52,33 @@ skynet_example 提供 [libsrpc](./skynet_example/libsrpc.lua) 一个很简单的
 
 - `sprc.set_default_codec(name)` 设置payload 打包方式，默认msgpack
 
-作为客户端请求：
+作为客户端请求Golang服务：
 
 - `srpc.send(node, sname, cmd, req)` 发送消息到golang 不阻塞
-- `srpc.call(node, sname, cmd, req)` 阻塞等待，两个返回值：ok表示调用是否成功。ret 表示内容
+- `srpc.call(node, sname, cmd, req)` 阻塞等待，两个返回值：ok表示调用是否成功。ret 表示返回内容
 
-作为服务端分发：
+作为服务端分发Golang消息：
 
-- `srpc.new_dispatcher(svc)` 初始化一个消息分发器 disp, disp 仅包含一个router方法注册回调函数
-  - `disp.router("SET", function(msg) end)` 注册一个SET方法到svc
+- `srpc.router(svc, cmd, callback)` 为svr注册一个`go cluster`消息路由
+
+```lua
+local db = {}
+-- 注册一个PING方法到db
+srpc.router(db, "PINGX", function(msg) return msg end)
+-- 可以参考example用例做一层简单的封装
+db:router("PINGX", function(msg) return msg end)
+
+-- 不影响原生skynet dispatch
+function db.PING(msg)
+  return msg
+end
+
+-- Golang sprc.Call 可以通过withPayloadCodec("text")调用
+function db.TEXT(text)
+  skynet.error(text)
+  return text
+end
+``` 
 
 - 其他参考[skynet_example测试用例](./skynet_example/main_test.lua)
 

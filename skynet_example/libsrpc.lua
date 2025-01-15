@@ -72,31 +72,25 @@ function srpc.call(node, sname, cmd, req)
     return ok, ret
 end
 
-function srpc.new_dispatcher(svc)
-    svc = svc or {}
-    return setmetatable(svc, {
-        __index = {
-            router = function(cmd, callback)
-                svc[cmd] = function(req)
-                    if req then
-                        req = srpc.codec.decode(req)
-                    end
-                    if srpc.profile then
-                        profile.start()
-                    end
-                    local ret = callback(req)
-                    if ret then
-                        ret = srpc.codec.encode(ret)
-                    end
-                    if srpc.profile then
-                        local cost = profile.stop()
-                        skynet.error(cmd, cost)
-                    end
-                    return ret
-                end
-            end,
-        },
-    })
+
+function srpc.router(svc, cmd, callback)
+    svc[cmd] = function(req)
+        if req then
+            req = srpc.codec.decode(req)
+        end
+        if srpc.profile then
+            profile.start()
+        end
+        local ret = callback(req)
+        if ret then
+            ret = srpc.codec.encode(ret)
+        end
+        if srpc.profile then
+            local cost = profile.stop()
+            skynet.error(cmd, cost)
+        end
+        return ret
+    end
 end
 
 return srpc

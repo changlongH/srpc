@@ -42,6 +42,14 @@ func TestClusterClient(t *testing.T) {
 		return
 	}
 
+	var pongMsg = map[string]string{}
+	var pingMsg = map[string]string{"ping": "pong"}
+	err = srpc.Call("db", "sdb", "PING", pingMsg, &pongMsg)
+	if err != nil || !reflect.DeepEqual(pingMsg, pongMsg) {
+		t.Error("PING err:", err)
+		return
+	}
+
 	var fooBar = map[string]string{"key": "srpc", "val": "foobar"}
 	caller := client.NewCaller("db", "sdb", "SETX", fooBar).WithTimeout(5 * time.Second)
 	if err = srpc.Invoke(caller); err != nil {
