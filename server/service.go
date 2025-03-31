@@ -208,7 +208,7 @@ func (s *service) call(mtype *methodType, ctx *SkynetContext, data []byte, isPus
 }
 
 func (s *service) getAllMethods() []string {
-	methods := make([]string, len(s.method))
+	methods := make([]string, 0, len(s.method))
 	for name := range s.method {
 		methods = append(methods, name)
 	}
