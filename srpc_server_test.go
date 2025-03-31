@@ -97,8 +97,14 @@ func TestRpcServer(t *testing.T) {
 	defer cancel()
 
 	addr := "127.0.0.1:2531"
+	var gate *server.Gate
+	var err error
+	if gate, err = server.NewGate(addr); err != nil {
+		panic(err.Error())
+	}
+
 	go func() {
-		if _, err := server.Open(addr); err != nil {
+		if err := gate.Start(); err != nil {
 			t.Error(err.Error())
 			return
 		}
@@ -123,7 +129,7 @@ func TestRpcServer(t *testing.T) {
 	}
 
 	node := "test"
-	_, err := cluster.Register(node, addr, client.WithPayloadCodec(&payloadcodec.MsgPack{}))
+	_, err = cluster.Register(node, addr, client.WithPayloadCodec(&payloadcodec.MsgPack{}))
 	if err != nil {
 		t.Error(err)
 		return
@@ -142,5 +148,6 @@ func TestRpcServer(t *testing.T) {
 	}
 
 	<-ctx.Done()
+	gate.Close(3 * time.Second)
 	fmt.Println("TestRpcServerSuccess")
 }
