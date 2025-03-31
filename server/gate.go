@@ -9,17 +9,21 @@ import (
 	"github.com/cloudwego/netpoll"
 )
 
+type Gate struct {
+	listener  netpoll.Listener
+	eventLoop netpoll.EventLoop
+}
+type connkey struct{}
+
 const (
 	headerSize = 2
 )
 
+var ctxkey connkey
+
 var _ netpoll.OnPrepare = prepare
 var _ netpoll.OnConnect = connect
 var _ netpoll.OnRequest = handle
-
-type connkey struct{}
-
-var ctxkey connkey
 
 func prepare(conn netpoll.Connection) context.Context {
 	agent := NewGateAgent(conn)
@@ -54,7 +58,7 @@ func handle(ctx context.Context, conn netpoll.Connection) error {
 
 // Open open address with netpoll.Option
 // opts disable WithOnPrepare and WithOnConnect
-func Open(address string, ops ...netpoll.Option) (netpoll.EventLoop, error) {
+func NewGate(address string, ops ...netpoll.Option) (*Gate, error) {
 	listener, err := netpoll.CreateListener("tcp", address)
 	if err != nil {
 		return nil, err
@@ -70,13 +74,27 @@ func Open(address string, ops ...netpoll.Option) (netpoll.EventLoop, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	err = eventLoop.Serve(listener)
-	return eventLoop, err
+	gate := &Gate{
+		listener:  listener,
+		eventLoop: eventLoop,
+	}
+	return gate, nil
 }
 
-func Shutdown(eventLoop netpoll.EventLoop, timeout time.Duration) {
+/*
+Serve registers a listener and runs blockingly to provide services,
+including listening to ports, accepting connections and processing trans data.
+When an exception occurs or Shutdown is invoked,
+Serve will return an error which describes the specific reason.
+*/
+func (gate *Gate) Start() error {
+	return gate.eventLoop.Serve(gate.listener)
+}
+
+// Close is used to graceful exit.
+// It will close all idle connections on the server, but will not change the underlying pollers.
+func (gate *Gate) Close(timeout time.Duration) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	eventLoop.Shutdown(ctx)
+	gate.eventLoop.Shutdown(ctx)
 }
