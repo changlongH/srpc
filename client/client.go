@@ -83,9 +83,6 @@ func (c *Client) readResponse(conn netpoll.Connection) {
 		if err := recover(); err != nil {
 			// TODO: need handle?
 			log.Println(err)
-			if c.conn != nil && c.conn.IsActive() {
-				c.conn.Close()
-			}
 		}
 		for _, req := range c.pending {
 			req.Error = errors.New("socker close")
@@ -93,6 +90,7 @@ func (c *Client) readResponse(conn netpoll.Connection) {
 		}
 		c.pending = map[uint32]*Req{}
 		c.mutex.Unlock()
+		conn.Close()
 	}()
 
 	var closeCh = make(chan struct{})
@@ -165,24 +163,34 @@ func (c *Client) syncConnect() error {
 		return nil
 	}
 
+	if c.wqueue != nil {
+		c.wqueue.Close()
+		c.wqueue = nil
+	}
+
 	conn, err := netpoll.DialConnection("tcp", c.Address, time.Second*5)
 	if err != nil {
 		return err
 	}
 
 	conn.AddCloseCallback(func(connection netpoll.Connection) error {
-		if c.wqueue != nil {
-			q := c.wqueue
-			c.wqueue = nil
-			q.Close()
+		c.Lock()
+		defer c.Unlock()
+		if c.Options.DisconnectHdle != nil {
+			c.Options.DisconnectHdle(connection.RemoteAddr().String())
 		}
-		c.conn = nil
 		return nil
 	})
+
+	//conn.SetReadTimeout(3 * time.Second)
+	conn.SetWriteTimeout(2 * time.Second)
 
 	c.conn = conn
 	c.wqueue = mux.NewShardQueue(mux.ShardSize, conn)
 	go c.readResponse(conn)
+	if c.Options.ConnectHdle != nil {
+		c.Options.ConnectHdle(conn.RemoteAddr().String())
+	}
 	return nil
 }
 
@@ -267,6 +275,10 @@ func (c *Client) invoke(addr *codec.Addr, seq uint32, method string, payload []b
 	writer := netpoll.NewLinkBuffer()
 	if err := codec.EncodeReq(writer, pack); err != nil {
 		return err
+	}
+
+	if c.wqueue == nil {
+		return fmt.Errorf("invalid wqueue addr:%s", c.Address)
 	}
 
 	// Put puts the buffer getter back to the queue.
