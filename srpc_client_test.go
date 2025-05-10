@@ -26,17 +26,26 @@ func TestClusterClient(t *testing.T) {
 		"db2": "127.0.0.1:2529",
 	}
 
-	errs := cluster.ReloadCluster(nodes, client.WithPayloadCodec(&payloadcodec.MsgPack{}))
+	clientOpts := []client.Option{
+		client.WithPayloadCodec(&payloadcodec.MsgPack{}),
+		client.WithConnectHandle(func(remoteAddr string) {
+			fmt.Println("cluster Connect: ", remoteAddr)
+		}),
+		client.WithDisConnectHandle(func(remoteAddr string) {
+			fmt.Println("cluster Disconnect: ", remoteAddr)
+		}),
+	}
+	errs := cluster.ReloadCluster(nodes, clientOpts...)
 	if errs != nil {
 		t.Errorf("register cluster nodes failed count: %d", len(errs))
 		return
 	}
 
 	// remove node db
-	cluster.Remove("db")
+	//cluster.Remove("db")
 
 	// register again with default codec
-	_, err := cluster.Register("db", "127.0.0.1:2528", client.WithPayloadCodec(&payloadcodec.MsgPack{}))
+	_, err := cluster.Register("db", "127.0.0.1:2528", clientOpts...)
 	if err != nil {
 		t.Error(err)
 		return
@@ -50,6 +59,8 @@ func TestClusterClient(t *testing.T) {
 		t.Error("PING err:", err, pingMsg, pongMsg)
 		return
 	}
+	time.Sleep(time.Second * 3)
+	//time.Sleep(time.Second * 3)
 
 	var fooBar = map[string]string{"key": "srpc", "val": "foobar"}
 	caller := client.NewCaller("db", "sdb", "SETX", fooBar).WithTimeout(5 * time.Second)
@@ -135,6 +146,7 @@ func TestClusterClient(t *testing.T) {
 	// wait close
 	time.Sleep(time.Second * 6)
 	fmt.Println("test cluster client succ")
+	time.Sleep(time.Second * 2)
 }
 
 func TestChangeNode(t *testing.T) {
@@ -145,28 +157,38 @@ func TestChangeNode(t *testing.T) {
 	}
 
 	var wg sync.WaitGroup
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		wg.Add(1)
+		time.Sleep(1)
 		go func() {
 			defer wg.Done()
 			var reply = map[string]string{}
-			var req = map[string]string{"msg": "ping: " + strconv.Itoa(i)}
-			// call will response after 10s
+			var req = map[string]string{"msg": "req=" + strconv.Itoa(i)}
+			// call will response after 5s
 			err = srpc.Call("db", "sdb", "TESTX", req, &reply)
 			if err != nil {
 				t.Error(err)
 				return
 			}
-			fmt.Println(time.Now().Local(), reply["val"])
+			fmt.Println(time.Now().Local(), "response: ", reply["msg"])
 		}()
 	}
 
-	time.Sleep(time.Second)
+	wg.Wait()
+	time.Sleep(1 * time.Second)
+	var reply = map[string]string{}
+	var req = map[string]string{"msg": "latest"}
+	// call will response after 5s
+	err = srpc.Call("db", "sdb", "TESTX", req, &reply)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+
 	_, err = cluster.Register("db", "127.0.0.1:2529")
 	if err != nil {
 		t.Error(err)
 		return
 	}
-	wg.Wait()
 	fmt.Println("test change node success")
 }

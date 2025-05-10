@@ -34,6 +34,15 @@ db:router("SLEEP", function(ti)
     return ti
 end)
 
+local a = 0
+db:router("TESTX", function(req)
+    if a == 1 then
+        skynet.sleep(3 * 100)
+    end
+    a = a + 1
+    return req
+end)
+
 -- raw srpc api equal db:router("PING", cb)
 srpc.router(db, "PING", function(msg)
     skynet.error("ping")
