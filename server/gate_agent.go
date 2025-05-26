@@ -15,7 +15,7 @@ type (
 	GateAgent struct {
 		conn   netpoll.Connection
 		wqueue *mux.ShardQueue     // use for write
-		Reader chan netpoll.Reader // use for reader socker data
+		Reader chan netpoll.Reader // use for reader socket data
 	}
 )
 

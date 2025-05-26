@@ -79,27 +79,28 @@ func (c *Client) decodeRspArgs(req *Req, msg *codec.RespPack) {
 
 func (c *Client) readResponse(conn netpoll.Connection) {
 	defer func() {
-		c.mutex.Lock()
 		if err := recover(); err != nil {
 			// TODO: need handle?
 			log.Println(err)
 		}
-		for _, req := range c.pending {
-			req.Error = errors.New("socker close")
-			req.Done <- req
-		}
+
+		c.mutex.Lock()
+		pending := c.pending
 		c.pending = map[uint32]*Req{}
-		c.mutex.Unlock()
 		conn.Close()
+		c.mutex.Unlock()
+
+		for _, req := range pending {
+			req.Error = errors.New("socket close")
+			close(req.Done)
+		}
 	}()
 
 	var closeCh = make(chan struct{})
 	var recv = make(chan netpoll.Reader, 1000)
 	var headerSize = 2
 	go func() error {
-		defer func() {
-			closeCh <- struct{}{}
-		}()
+		defer close(closeCh)
 		for {
 			reader := conn.Reader()
 			bLen, err := reader.ReadBinary(headerSize)
@@ -244,7 +245,7 @@ func (c *Client) Invoke(caller *Caller) error {
 			delete(c.pending, seq)
 			c.mutex.Unlock()
 		}
-		return fmt.Errorf("invoke %s socker failed. %s", caller.String(), err.Error())
+		return fmt.Errorf("invoke (%s) socket failed. %s", caller.String(), err.Error())
 	}
 
 	if caller.IsPush() {
@@ -260,7 +261,10 @@ func (c *Client) Invoke(caller *Caller) error {
 	case <-req.Done:
 		return req.Error
 	case <-time.After(caller.Timeout):
-		return fmt.Errorf("invoke %s timeout", caller.String())
+		c.mutex.Lock()
+		delete(c.pending, seq)
+		c.mutex.Unlock()
+		return fmt.Errorf("invoke %s timeout %0.1fs", caller.String(), caller.Timeout.Seconds())
 	}
 }
 
