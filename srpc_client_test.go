@@ -59,8 +59,21 @@ func TestClusterClient(t *testing.T) {
 		t.Error("PING err:", err, pingMsg, pongMsg)
 		return
 	}
+
+	go func() {
+		caller := client.NewCaller("db2", "sdb", "SLEEP", 5)
+		if err := srpc.Invoke(caller); err != nil && err.Error() != "socket close" {
+			t.Error(err.Error())
+		}
+	}()
+	go func() {
+		caller := client.NewCaller("db2", "sdb", "SLEEP", 5)
+		if err := srpc.Invoke(caller); err != nil && err.Error() != "socket close" {
+			t.Error(err.Error())
+		}
+	}()
+
 	time.Sleep(time.Second * 3)
-	//time.Sleep(time.Second * 3)
 
 	var fooBar = map[string]string{"key": "srpc", "val": "foobar"}
 	caller := client.NewCaller("db", "sdb", "SETX", fooBar).WithTimeout(5 * time.Second)
