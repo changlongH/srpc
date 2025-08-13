@@ -78,10 +78,13 @@ func (c *Client) decodeRspArgs(req *Req, msg *codec.RespPack) {
 }
 
 func (c *Client) readResponse(conn netpoll.Connection) {
+	var bizErr error
 	defer func() {
+		var errmsg string
 		if err := recover(); err != nil {
 			// TODO: need handle?
 			log.Println(err)
+			errmsg = "panic on read mesage"
 		}
 
 		c.mutex.Lock()
@@ -90,41 +93,49 @@ func (c *Client) readResponse(conn netpoll.Connection) {
 		conn.Close()
 		c.mutex.Unlock()
 
+		if bizErr != nil {
+			if errmsg != "" {
+				errmsg += ": "
+			}
+			errmsg = errmsg + bizErr.Error()
+		}
 		for _, req := range pending {
-			req.Error = errors.New("socket close")
+			req.Error = errors.New(errmsg)
 			close(req.Done)
 		}
 	}()
 
 	var closeCh = make(chan struct{})
+	var errChan = make(chan error)
 	var recv = make(chan netpoll.Reader, 1000)
 	var headerSize = 2
-	go func() error {
+	go func() {
 		defer close(closeCh)
 		for {
 			reader := conn.Reader()
 			bLen, err := reader.ReadBinary(headerSize)
 			if err != nil {
-				return err
+				errChan <- err
+				return
 			}
 			// header bigEndian
 			pkgsize := int(binary.BigEndian.Uint16(bLen))
 			pkg, err := reader.Slice(pkgsize)
 			if err != nil {
-				return err
+				errChan <- err
+				return
 			}
 			recv <- pkg
 		}
 	}()
 
 	var pendingPack = make(map[uint32]*codec.RespPack)
-	var err error
 	var msg *codec.RespPack
 	for {
 		select {
 		case pkg := <-recv:
-			msg, err = codec.ReadResp(pkg, pendingPack)
-			if err != nil {
+			msg, bizErr = codec.ReadResp(pkg, pendingPack)
+			if bizErr != nil {
 				return
 			}
 			if msg == nil {
@@ -143,6 +154,8 @@ func (c *Client) readResponse(conn netpoll.Connection) {
 				// invalid session
 			}
 		case <-closeCh:
+			return
+		case bizErr = <-errChan:
 			return
 		}
 	}
