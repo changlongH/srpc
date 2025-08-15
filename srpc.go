@@ -2,10 +2,16 @@ package srpc
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/changlongH/srpc/client"
 	"github.com/changlongH/srpc/cluster"
 )
+
+type Host struct {
+	Name string
+	Addr string
+}
 
 /*
 	Send equal skynet cluster.send(node, addr, cmd, args)
@@ -58,6 +64,44 @@ func Invoke(caller *client.Caller) error {
 	c := cluster.Query(caller.Node)
 	if c == nil {
 		return errors.New("not found cluster node: " + caller.Node)
+	}
+	return c.Invoke(caller)
+}
+
+type NewClientOptsHandle func() []client.Option
+
+var (
+	newClientOptsHandle NewClientOptsHandle = func() []client.Option {
+		return []client.Option{}
+	}
+)
+
+func SetClientOptsHandler(handler NewClientOptsHandle) {
+	newClientOptsHandle = handler
+}
+
+// CallHost 使用名称和地址调用，无需提前注册
+// NOTE: 但是必须提前设定 SetClientOptsHandler 否则使用默认配置初始化客户端可能导致预期之外的问题
+// Host{Name:"gate",Addr:"127.0.0.1:8888"}
+func CallHost(host *Host, addr any, cmd string, args any, reply any) error {
+	if len(host.Name) <= 0 {
+		return errors.New("invalid host name")
+	}
+	caller := client.NewCaller(host.Name, addr, cmd, args).WithReply(reply)
+	var err error
+	if caller, err = caller.Done(); err != nil {
+		return err
+	}
+	c := cluster.Query(host.Name)
+	if c == nil {
+		if len(host.Addr) > 0 {
+			opts := newClientOptsHandle()
+			if c, err = cluster.Register(host.Name, host.Addr, opts...); err != nil {
+				return fmt.Errorf("register node: %s addr:%s FAILED ", host.Name, host.Addr)
+			}
+		} else {
+			return errors.New("cluster not found node: " + host.Name)
+		}
 	}
 	return c.Invoke(caller)
 }
