@@ -117,7 +117,12 @@ func TestRpcServer(t *testing.T) {
 	svcOpts := []server.Option{
 		server.WithPayloadCodec(&payloadcodec.MsgPack{}),
 		server.WithAccessLog(nil),
+		//server.WithSyncDispatch(),
+		//server.WithMonitorInterval(2 * time.Second),
 	}
+	server.SetRecoveryHandler(func(s string, err any) {
+		log.Printf("OnServerErrorHandler service:%s err:%v", s, err)
+	})
 	if err := server.Register(arith, sname, svcOpts...); err != nil {
 		t.Error(err.Error())
 	}
@@ -144,6 +149,13 @@ func TestRpcServer(t *testing.T) {
 	}
 	if reply.C != args.A+args.B {
 		t.Errorf("Add: expected %d got %d", reply.C, args.A+args.B)
+		return
+	}
+
+	var delay = 4 * time.Second
+	err = srpc.Call(node, sname, "SleepMilli", delay.Milliseconds(), nil)
+	if err != nil {
+		t.Error(err)
 		return
 	}
 

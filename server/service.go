@@ -1,21 +1,36 @@
 package server
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"go/token"
 	"log"
 	"reflect"
+	"sync"
+	"time"
 
+	"github.com/changlongH/srpc/codec"
 	payloadcodec "github.com/changlongH/srpc/payload_codec"
 )
 
 type (
+	msg struct {
+		req   *codec.ReqPack
+		agent *GateAgent
+	}
 	service struct {
 		name    string                 // name of service
 		rcvr    reflect.Value          // receiver of methods for the service
 		typ     reflect.Type           // type of the receiver
 		method  map[string]*methodType // registered methods
 		Options Options
+
+		sessionMutex   sync.Mutex
+		currentMethod  string
+		currentSession uint64    //  monitor sync dispatch (maybe in endless loop)
+		sessionCounter uint64    // increment session id
+		msgQueue       chan *msg // msgqueue
 	}
 )
 
@@ -142,6 +157,9 @@ func NewService(opts ...Option) *service {
 	svc := &service{
 		Options: options,
 	}
+	if svc.Options.SyncDisptch {
+		svc.msgQueue = make(chan *msg, 5000)
+	}
 	return svc
 }
 
@@ -213,4 +231,84 @@ func (s *service) getAllMethods() []string {
 		methods = append(methods, name)
 	}
 	return methods
+}
+
+func (s *service) incCurrentSessionID(method string) uint64 {
+	s.sessionMutex.Lock()
+	defer s.sessionMutex.Unlock()
+
+	s.sessionCounter++
+	s.currentMethod = method
+	s.currentSession = s.sessionCounter
+	return s.currentSession
+}
+
+func (s *service) getCurrentSession() uint64 {
+	s.sessionMutex.Lock()
+	defer s.sessionMutex.Unlock()
+	return s.currentSession
+}
+
+func (s *service) resetCurrentSession() {
+	s.sessionMutex.Lock()
+	defer s.sessionMutex.Unlock()
+	s.currentSession = 0
+}
+
+func (s *service) startMonitor() {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	var lastSession uint64
+	var sessionStartTime time.Time
+
+	for {
+		<-ticker.C
+
+		currentSession := s.getCurrentSession()
+		if currentSession == 0 {
+			lastSession = 0
+			continue
+		}
+
+		if currentSession == lastSession && currentSession != 0 {
+			duration := time.Since(sessionStartTime)
+			if duration.Seconds() >= s.Options.MonitorInterval.Seconds() {
+				var err = fmt.Errorf("ERROR: service:[%s] maybe in endlessloop method [%s] duration:%dms", s.name, s.currentMethod, duration.Milliseconds())
+				recoveryHandle(s.name, err)
+			}
+		} else {
+			lastSession = currentSession
+			sessionStartTime = time.Now()
+		}
+	}
+}
+
+func (s *service) pushMsgToDispatchQueue(agent *GateAgent, req *codec.ReqPack) {
+	s.msgQueue <- &msg{req: req, agent: agent}
+}
+
+func (s *service) processMsgQueue() {
+	go s.startMonitor()
+	for msg := range s.msgQueue {
+		var req = msg.req
+		s.incCurrentSessionID(req.Method)
+		msg.agent.callServiceMethod(s, req.Method, req.Session, req.Payload, req.Push)
+		s.resetCurrentSession()
+	}
+}
+
+func (s *service) dispatch(methodName string, data []byte, isPush bool) ([]byte, error) {
+	mtype := s.method[methodName]
+	if mtype == nil {
+		return nil, fmt.Errorf("not find method (%s.%s)", s.name, methodName)
+	}
+
+	startTime := time.Now()
+	ctx := NewSkynetContext(context.Background())
+	replyData, err := s.call(mtype, ctx, data, isPush)
+	if s.Options.AccessHdle != nil {
+		s.Options.AccessHdle(ctx, s.name, methodName, time.Since(startTime), err)
+	}
+	return replyData, err
 }

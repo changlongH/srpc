@@ -32,6 +32,14 @@ func GetDispatcher() *Dispatcher {
 	return inst
 }
 
+func (disp *Dispatcher) GetService(sname string) *service {
+	svci, ok := disp.serviceMap.Load(sname)
+	if !ok {
+		return nil
+	}
+	return svci.(*service)
+}
+
 func (disp *Dispatcher) DispatchReq(sname string, methodName string, data []byte, isPush bool) ([]byte, error) {
 	svci, ok := disp.serviceMap.Load(sname)
 	if !ok {
@@ -98,6 +106,9 @@ func Register(rcvr any, name string, opts ...Option) error {
 	disp := GetDispatcher()
 	if _, dup := disp.serviceMap.LoadOrStore(name, s); dup {
 		return errors.New("rpc: service already defined: " + name)
+	}
+	if s.Options.SyncDisptch {
+		go s.processMsgQueue()
 	}
 	return nil
 }

@@ -73,7 +73,7 @@ func (agent *GateAgent) Start() {
 			}
 
 			if req != nil {
-				go agent.Dispatch(req)
+				agent.Dispatch(req)
 			}
 		case <-closeCh:
 			// conn close can't respone
@@ -113,33 +113,50 @@ func (agent *GateAgent) ResponseOk(session uint32, payload []byte) {
 
 func (agent *GateAgent) Dispatch(req *codec.ReqPack) {
 	var sname = req.Addr.String()
-	var method = req.Method
+	svc := GetDispatcher().GetService(sname)
+	if svc == nil {
+		if !req.IsPush() {
+			agent.ResponseErr(req.Session, fmt.Errorf("not find service: %s", sname))
+		}
+		return
+	}
+
+	if svc.Options.SyncDisptch {
+		svc.pushMsgToDispatchQueue(agent, req)
+	} else {
+		go agent.callServiceMethod(svc, req.Method, req.Session, req.Payload, req.Push)
+	}
+}
+
+func (agent *GateAgent) callServiceMethod(svc *service, method string, session uint32, payload []byte, isPush bool) {
+	var sname = svc.name
 	defer func() {
 		if err := recover(); err != nil {
 			log.Printf("[panic] call %s %s.%s err=%v", agent.conn.RemoteAddr().String(), sname, method, err)
-			if !req.IsPush() {
-				agent.ResponseErr(req.Session, fmt.Errorf("[panic] call=%s.%s err=%v", sname, method, err))
+			if !isPush {
+				agent.ResponseErr(session, fmt.Errorf("[panic] call=%s.%s err=%v", sname, method, err))
 			}
+			recoveryHandle(agent.conn.RemoteAddr().String(), fmt.Errorf("[dipacth panic] [%s.%s] %v", sname, method, err))
 			return
 		}
 	}()
 
 	//log.Printf("dispatch session=%d push=%v call=%s.%s  args=%v", req.Session, req.IsPush(), sname, method, string(req.Payload))
-	replyBytes, err := GetDispatcher().DispatchReq(sname, method, req.Payload, req.IsPush())
-	if req.IsPush() {
+	replyBytes, err := svc.dispatch(method, payload, isPush)
+	if isPush {
 		return
 	}
 
 	if err != nil {
-		agent.ResponseErr(req.Session, err)
+		agent.ResponseErr(session, err)
 		return
 	}
 
 	//log.Printf("reply session=%d msg=%s", req.Session, string(replyBytes))
 	buf := &bytes.Buffer{}
 	if err := codec.WriteStringToBuf(buf, replyBytes); err != nil {
-		agent.ResponseErr(req.Session, err)
+		agent.ResponseErr(session, err)
 	} else {
-		agent.ResponseOk(req.Session, buf.Bytes())
+		agent.ResponseOk(session, buf.Bytes())
 	}
 }
