@@ -351,7 +351,7 @@ func writeLargeReqPack(writer netpoll.Writer, req *ReqPack, buf *bytes.Buffer) (
 		if _, err = writer.WriteBinary(payload[index : index+sz]); err != nil {
 			return
 		}
-		index = sz
+		index += sz
 		remainLen = remainLen - sz
 	}
 	return

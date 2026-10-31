@@ -1,6 +1,7 @@
 package codec
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 
@@ -98,7 +99,7 @@ func WriteResp(writer netpoll.Writer, msg *RespPack) (err error) {
 			if _, err = writer.WriteBinary(data[index : index+s]); err != nil {
 				return
 			}
-			index = s
+			index += s
 			sz = sz - s
 		}
 	}
@@ -157,6 +158,12 @@ func ReadResp(pkg netpoll.Reader, pendingResp map[uint32]*RespPack) (resp *RespP
 		}
 		delete(pendingResp, session)
 		payload = append(resp.Payload, payload...)
+		// The multipart begin frame stores the total length, not string data.
+		bodyLen := binary.LittleEndian.Uint32(payload[:4])
+		payload = payload[4:]
+		if uint64(len(payload)) != uint64(bodyLen) {
+			return nil, fmt.Errorf("invalid response size=%d,expect=%d", len(payload), bodyLen)
+		}
 		resp.Payload, _, err = decodeString(payload)
 		return
 	case 2: // multi begin
